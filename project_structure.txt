@@ -1,0 +1,73 @@
+game-theory-be/
+├── src/
+│   ├── shared/                    # Shared core
+│   │   ├── domain/                # Domain models & interfaces
+│   │   │   ├── entities.py        # PlayerSession, PlayerGuess, RoundResult
+│   │   │   ├── repositories.py    # Repository interfaces
+│   │   │   └── events.py          # Domain events
+│   │   ├── infrastructure/
+│   │   │   ├── cache/             # Redis adapter
+│   │   │   │   ├── redis_client.py
+│   │   │   │   └── cache_repository.py
+│   │   │   ├── messaging/         # RabbitMQ adapter
+│   │   │   │   ├── rabbitmq_client.py
+│   │   │   │   └── message_publisher.py
+│   │   │   └── socket_io/         # Socket.io gateway
+│   │   │       └── socket_gateway.py
+│   │   └── constants.py           # Redis keys, routing keys
+│   │
+│   ├── modules/
+│   │   ├── player/                # Player Module
+│   │   │   ├── domain/
+│   │   │   │   ├── player_entity.py
+│   │   │   │   └── player_repository.py
+│   │   │   ├── use_cases/
+│   │   │   │   ├── join_room.py
+│   │   │   │   └── player_factory.py
+│   │   │   ├── adapter/
+│   │   │   │   └── player_cache_repository.py
+│   │   │   └── controller/
+│   │   │       └── player_controller.py
+│   │   │
+│   │   ├── game_round/            # Game Round Module
+│   │   │   ├── domain/
+│   │   │   │   ├── round_entity.py
+│   │   │   │   └── round_repository.py
+│   │   │   ├── use_cases/
+│   │   │   │   ├── submit_guess.py
+│   │   │   │   ├── calculate_result.py
+│   │   │   │   └── round_factory.py
+│   │   │   ├── adapter/
+│   │   │   │   └── round_cache_repository.py
+│   │   │   └── controller/
+│   │   │       └── round_controller.py
+│   │   │
+│   │   ├── room/                  # Room Module
+│   │   │   ├── domain/
+│   │   │   │   ├── room_entity.py
+│   │   │   │   └── room_repository.py
+│   │   │   ├── use_cases/
+│   │   │   │   ├── create_room.py
+│   │   │   │   └── room_factory.py
+│   │   │   ├── adapter/
+│   │   │   │   └── room_cache_repository.py
+│   │   │   └── controller/
+│   │   │       └── room_controller.py
+│   │   │
+│   │   └── event_listener/        # Event Listener (Observer pattern)
+│   │       ├── round_event_listener.py
+│   │       └── player_event_listener.py
+│   │
+│   ├── worker/                    # Async Worker
+│   │   ├── game_worker.py         # Main worker
+│   │   └── task_handlers.py       # Handle tasks from queue
+│   │
+│   └── app.py                     # Main app entrypoint
+│
+├── config/
+│   ├── settings.py                # Environment config
+│   └── logging.py
+│
+├── requirements.txt
+├── docker-compose.yml
+└── .env.example
