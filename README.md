@@ -80,33 +80,17 @@ src/
 - **Adapter Pattern**: Infrastructure adapters (Redis, RabbitMQ, Socket.io)
 - **Dependency Injection**: Constructor-based DI for loose coupling
 
-## Getting Started
+## Deployment
 
-### Prerequisites
+### Render Deployment
+See `RENDER_DEPLOYMENT.md` for complete guide.
 
-- Python 3.11+
-- Docker & Docker Compose
-- Or manual setup: Redis + RabbitMQ
+**Quick Setup**:
+1. Add `REDIS_URL` from Upstash
+2. Add `RABBITMQ_URL` from CloudAMQP
+3. Deploy via Render (Web + Background Worker)
 
-### Quick Start with Docker
-
-1. **Clone and setup**
-```bash
-cd BE
-cp .env.example .env
-```
-
-2. **Start all services**
-```bash
-docker-compose up -d
-```
-
-Services will be available at:
-- Socket.io Gateway: `http://localhost:5000`
-- RabbitMQ Admin: `http://localhost:15672` (guest/guest)
-- Redis: `localhost:6379`
-
-### Local Development Setup
+### Local Development
 
 1. **Install dependencies**
 ```bash

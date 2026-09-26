@@ -1,0 +1,41 @@
+services:
+  # Socket.io Gateway Server
+  - type: web
+    name: game-theory-gateway
+    runtime: python311
+    rootDir: BE
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m src.app
+    envVars:
+      - key: REDIS_URL
+        value: ${REDIS_URL}
+      - key: RABBITMQ_URL
+        value: ${RABBITMQ_URL}
+      - key: ENV
+        value: production
+      - key: DEBUG
+        value: false
+      - key: SOCKET_IO_PORT
+        value: 5000
+    autoDeploy: true
+    healthCheckPath: /health
+
+  # Game Worker (Background Job)
+  - type: background
+    name: game-theory-worker
+    runtime: python311
+    rootDir: BE
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m src.worker.game_worker
+    envVars:
+      - key: REDIS_URL
+        value: ${REDIS_URL}
+      - key: RABBITMQ_URL
+        value: ${RABBITMQ_URL}
+      - key: ENV
+        value: production
+      - key: DEBUG
+        value: false
+      - key: WORKER_PORT
+        value: 5001
+    autoDeploy: true

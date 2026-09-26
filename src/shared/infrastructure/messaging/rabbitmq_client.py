@@ -27,25 +27,34 @@ class RabbitMQClient:
 
     def connect(self):
         """Initialize RabbitMQ connection"""
-        credentials = pika.PlainCredentials(
-            settings.RABBITMQ_USER, settings.RABBITMQ_PASSWORD
-        )
-        parameters = pika.ConnectionParameters(
-            host=settings.RABBITMQ_HOST,
-            port=settings.RABBITMQ_PORT,
-            virtual_host=settings.RABBITMQ_VHOST,
-            credentials=credentials,
-        )
-        self.connection = pika.BlockingConnection(parameters)
-        self.channel = self.connection.channel()
+        try:
+            # Use URL if provided (CloudAMQP), otherwise build from components
+            if settings.RABBITMQ_URL:
+                parameters = pika.URLParameters(settings.RABBITMQ_URL)
+            else:
+                credentials = pika.PlainCredentials(
+                    settings.RABBITMQ_USER, settings.RABBITMQ_PASSWORD
+                )
+                parameters = pika.ConnectionParameters(
+                    host=settings.RABBITMQ_HOST,
+                    port=settings.RABBITMQ_PORT,
+                    virtual_host=settings.RABBITMQ_VHOST,
+                    credentials=credentials,
+                )
+            
+            self.connection = pika.BlockingConnection(parameters)
+            self.channel = self.connection.channel()
 
-        # Declare exchange
-        self.channel.exchange_declare(
-            exchange=RABBITMQ_EXCHANGE,
-            exchange_type=RABBITMQ_EXCHANGE_TYPE,
-            durable=True,
-        )
-        logger.info("RabbitMQ connected")
+            # Declare exchange
+            self.channel.exchange_declare(
+                exchange=RABBITMQ_EXCHANGE,
+                exchange_type=RABBITMQ_EXCHANGE_TYPE,
+                durable=True,
+            )
+            logger.info("RabbitMQ connected")
+        except Exception as e:
+            logger.error(f"Failed to connect to RabbitMQ: {e}")
+            raise
 
     def disconnect(self):
         """Close RabbitMQ connection"""

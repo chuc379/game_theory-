@@ -26,10 +26,19 @@ class RedisClient:
         if self._initialized:
             return
 
-        self.client = await redis.from_url(
-            f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}/{settings.REDIS_DB}",
-            decode_responses=True,
-        )
+        # Use Redis URL if provided (Upstash), otherwise build from components
+        if settings.REDIS_URL:
+            url = settings.REDIS_URL
+            # Add decode_responses parameter if not in URL
+            if "?" not in url:
+                url += "?decode_responses=True"
+            self.client = await redis.from_url(url, decode_responses=True)
+        else:
+            # Local Redis connection
+            self.client = await redis.from_url(
+                f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}/{settings.REDIS_DB}",
+                decode_responses=True,
+            )
         self._initialized = True
         logger.info("Redis connected")
 
