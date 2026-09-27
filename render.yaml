@@ -3,9 +3,9 @@ services:
   - type: web
     name: game-theory-gateway
     runtime: python311
-    rootDir: BE
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r BE/requirements.txt
     startCommand: python -m src.app
+    workingDirectory: BE
     envVars:
       - key: REDIS_URL
         value: ${REDIS_URL}
@@ -24,9 +24,9 @@ services:
   - type: background
     name: game-theory-worker
     runtime: python311
-    rootDir: BE
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r BE/requirements.txt
     startCommand: python -m src.worker.game_worker
+    workingDirectory: BE
     envVars:
       - key: REDIS_URL
         value: ${REDIS_URL}
