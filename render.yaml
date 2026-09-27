@@ -3,6 +3,7 @@ services:
   - type: web
     name: game-theory-gateway
     runtime: python
+    plan: free
     rootDir: BE
     buildCommand: pip install -r requirements.txt
     startCommand: python -m src.app
@@ -24,6 +25,7 @@ services:
   - type: worker
     name: game-theory-worker
     runtime: python
+    plan: free
     rootDir: BE
     buildCommand: pip install -r requirements.txt
     startCommand: python -m src.worker.game_worker
