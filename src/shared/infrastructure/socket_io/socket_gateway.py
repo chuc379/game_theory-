@@ -30,12 +30,19 @@ class SocketGateway:
         """Create aiohttp application"""
         app = web.Application()
         app.router.add_get("/health", SocketGateway._health_handler)
+        app.router.add_get("/api/swagger.json", SocketGateway._swagger_handler)
         return app
 
     @staticmethod
     async def _health_handler(request):
         """Health check endpoint"""
         return web.json_response({"status": "ok"})
+
+    @staticmethod
+    async def _swagger_handler(request):
+        """Swagger spec endpoint"""
+        from src.shared.infrastructure.swagger import SWAGGER_SPEC
+        return web.json_response(SWAGGER_SPEC)
 
     def on(self, event: str, namespace: Optional[str] = None) -> Callable:
         """Register event handler"""
