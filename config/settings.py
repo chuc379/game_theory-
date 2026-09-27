@@ -1,43 +1,36 @@
-from pydantic_settings import BaseSettings
+import os
 from urllib.parse import urlparse
 
 
-class Settings(BaseSettings):
-    # Redis - Support both individual config and URL
-    REDIS_URL: str = ""
-    REDIS_HOST: str = "localhost"
-    REDIS_PORT: int = 6379
-    REDIS_DB: int = 0
-    REDIS_PASSWORD: str = ""
+class Settings:
+    def __init__(self):
+        # Redis
+        self.REDIS_URL = os.getenv("REDIS_URL", "")
+        self.REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+        self.REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+        self.REDIS_DB = int(os.getenv("REDIS_DB", 0))
+        self.REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 
-    # RabbitMQ - Support both individual config and URL
-    RABBITMQ_URL: str = ""
-    RABBITMQ_HOST: str = "localhost"
-    RABBITMQ_PORT: int = 5672
-    RABBITMQ_USER: str = "guest"
-    RABBITMQ_PASSWORD: str = "guest"
-    RABBITMQ_VHOST: str = "/"
+        # RabbitMQ
+        self.RABBITMQ_URL = os.getenv("RABBITMQ_URL", "")
+        self.RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
+        self.RABBITMQ_PORT = int(os.getenv("RABBITMQ_PORT", 5672))
+        self.RABBITMQ_USER = os.getenv("RABBITMQ_USER", "guest")
+        self.RABBITMQ_PASSWORD = os.getenv("RABBITMQ_PASSWORD", "guest")
+        self.RABBITMQ_VHOST = os.getenv("RABBITMQ_VHOST", "/")
 
-    # Server
-    SOCKET_IO_PORT: int = 5000
-    WORKER_PORT: int = 5001
+        # Server
+        self.SOCKET_IO_PORT = int(os.getenv("SOCKET_IO_PORT", 5000))
+        self.WORKER_PORT = int(os.getenv("WORKER_PORT", 5001))
 
-    # Environment
-    ENV: str = "development"
-    DEBUG: bool = True
+        # Environment
+        self.ENV = os.getenv("ENV", "development")
+        self.DEBUG = os.getenv("DEBUG", "true").lower() == "true"
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
-
-    def __init__(self, **data):
-        super().__init__(**data)
-        
-        # Parse Redis URL if provided
+        # Parse URLs if provided
         if self.REDIS_URL:
             self._parse_redis_url()
         
-        # Parse RabbitMQ URL if provided
         if self.RABBITMQ_URL:
             self._parse_rabbitmq_url()
 

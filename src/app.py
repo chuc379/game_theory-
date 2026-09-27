@@ -100,10 +100,7 @@ class GameApplication:
                     "player_name": data.get("player_name"),
                     "socket_id": sid,
                 }
-                # Validate request
-                from src.modules.player.controller.player_controller import JoinRoomRequest
-                req = JoinRoomRequest(**request)
-                result = await self.player_controller.join_room(req)
+                result = await self.player_controller.join_room(request)
 
                 if result.get("success"):
                     # Publish event to message broker
@@ -129,9 +126,13 @@ class GameApplication:
             logger.info(f"Submit guess event from {sid}: {data}")
             try:
                 # Validate request
-                from src.modules.game_round.controller.round_controller import SubmitGuessRequest
-                req = SubmitGuessRequest(**data)
-                result = await self.round_controller.submit_guess(req)
+                from src.modules.game_round.controller.round_controller import validate_submit_guess
+                valid, error = validate_submit_guess(data)
+                if not valid:
+                    await socket_gateway.emit_async("error", {"error": error}, to=sid)
+                    return
+                
+                result = await self.round_controller.submit_guess(data)
 
                 if result.get("success"):
                     # Publish to message broker for worker
@@ -157,8 +158,11 @@ class GameApplication:
             logger.info(f"Calculate result event from {sid}: {data}")
             try:
                 # Validate request
-                from src.modules.game_round.controller.round_controller import CalculateResultRequest
-                req = CalculateResultRequest(**data)
+                from src.modules.game_round.controller.round_controller import validate_calculate_result
+                valid, error = validate_calculate_result(data)
+                if not valid:
+                    await socket_gateway.emit_async("error", {"error": error}, to=sid)
+                    return
 
                 # Publish to worker queue
                 message_publisher.publish_calculate_result(
