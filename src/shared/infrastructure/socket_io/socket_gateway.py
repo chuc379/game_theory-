@@ -15,9 +15,11 @@ class SocketGateway:
     def __init__(self):
         self.sio = AsyncServer(
             async_mode="aiohttp",
-            cors_allowed_origins="*",
+            cors_allowed_origins=["http://localhost:3000", "http://localhost:3001", "https://*"],
             ping_timeout=60,
             ping_interval=25,
+            engineio_logger=False,
+            logger=False,
         )
         self.app = None
 
@@ -29,6 +31,16 @@ class SocketGateway:
     def create_app() -> web.Application:
         """Create aiohttp application"""
         app = web.Application()
+        
+        # CORS middleware
+        async def cors_middleware(request, handler):
+            response = await handler(request)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+            response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+            return response
+        
+        app.middlewares.append(cors_middleware)
         app.router.add_get("/health", SocketGateway._health_handler)
         app.router.add_get("/api/swagger.json", SocketGateway._swagger_handler)
         app.router.add_get("/api/docs", SocketGateway._swagger_ui_handler)
