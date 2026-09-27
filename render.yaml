@@ -8,20 +8,20 @@ services:
     startCommand: python -m src.app
     envVars:
       - key: REDIS_URL
-        value: ${REDIS_URL}
+        value: rediss://default:gQAAAAAABJrbAAIgcDFjMDIzOGY3NzY0NmM0NDFjYTZmMDEzOTQ1MTc3ZjYxMg@patient-chimp-301787.upstash.io:6379
       - key: RABBITMQ_URL
-        value: ${RABBITMQ_URL}
+        value: amqps://xyivdmmf:1Wnz0qNO8jszbTcPjjSrRXO0GH-APuUY@kingfisher.lmq.cloudamqp.com/xyivdmmf
       - key: ENV
         value: production
       - key: DEBUG
-        value: false
+        value: "false"
       - key: SOCKET_IO_PORT
-        value: 5000
+        value: "5000"
     autoDeploy: true
     healthCheckPath: /health
 
   # Game Worker (Background Job)
-  - type: background
+  - type: worker
     name: game-theory-worker
     runtime: python311
     rootDir: BE
@@ -29,13 +29,13 @@ services:
     startCommand: python -m src.worker.game_worker
     envVars:
       - key: REDIS_URL
-        value: ${REDIS_URL}
+        value: rediss://default:gQAAAAAABJrbAAIgcDFjMDIzOGY3NzY0NmM0NDFjYTZmMDEzOTQ1MTc3ZjYxMg@patient-chimp-301787.upstash.io:6379
       - key: RABBITMQ_URL
-        value: ${RABBITMQ_URL}
+        value: amqps://xyivdmmf:1Wnz0qNO8jszbTcPjjSrRXO0GH-APuUY@kingfisher.lmq.cloudamqp.com/xyivdmmf
       - key: ENV
         value: production
       - key: DEBUG
-        value: false
+        value: "false"
       - key: WORKER_PORT
-        value: 5001
+        value: "5001"
     autoDeploy: true
