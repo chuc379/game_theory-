@@ -198,8 +198,11 @@ class GameApplication:
         port = port or settings.SOCKET_IO_PORT
 
         # Create app
-        self.app = socket_gateway.create_app()
-        socket_gateway.setup(self.app)
+        app = socket_gateway.create_app()
+        
+        # Setup Socket.io BEFORE creating the application
+        socket_gateway.setup(app)
+        self.app = socket_gateway.app
 
         # Setup handlers
         self.setup_socket_handlers()
