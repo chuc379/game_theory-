@@ -55,22 +55,33 @@ class SocketGateway:
             <title>Game Theory API - Swagger UI</title>
             <meta charset="utf-8"/>
             <meta name="viewport" content="width=device-width, initial-scale=1">
-            <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@3/swagger-ui.css">
+            <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@4/swagger-ui.css">
+            <style>
+                html { box-sizing: border-box; overflow: -moz-scrollbars-vertical; overflow-y: scroll; }
+                *, *:before, *:after { box-sizing: inherit; }
+                body { margin:0; padding: 0; }
+            </style>
         </head>
         <body>
             <div id="swagger-ui"></div>
-            <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@3/swagger-ui.js"></script>
-            <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@3/swagger-ui-standalone-preset.js"></script>
+            <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@4/swagger-ui-bundle.js" charset="UTF-8"></script>
+            <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@4/swagger-ui-standalone-preset.js" charset="UTF-8"></script>
             <script>
-            const ui = SwaggerUIBundle({
-                url: "/api/swagger.json",
-                dom_id: '#swagger-ui',
-                presets: [
-                    SwaggerUIBundle.presets.apis,
-                    SwaggerUIStandalonePreset
-                ],
-                layout: "BaseLayout"
-            })
+                window.onload = function() {
+                    window.ui = SwaggerUIBundle({
+                        url: "/api/swagger.json",
+                        dom_id: '#swagger-ui',
+                        deepLinking: true,
+                        presets: [
+                            SwaggerUIBundle.presets.apis,
+                            SwaggerUIStandalonePreset
+                        ],
+                        plugins: [
+                            SwaggerUIBundle.plugins.DownloadUrl
+                        ],
+                        layout: "StandaloneLayout"
+                    })
+                }
             </script>
         </body>
         </html>
