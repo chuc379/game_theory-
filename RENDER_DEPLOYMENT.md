@@ -1,5 +1,14 @@
 # Deploy to Render Guide
 
+## 🔧 Latest Update
+
+**Fixed Socket.io Setup (Sep 27, 2026)**:
+- ✅ App startup/shutdown hooks now registered correctly on aiohttp app BEFORE Socket.io wrapping
+- ✅ ASGI wrapped app correctly passed to web.run_app()
+- ✅ Fix pushed to main branch - Render should auto-redeploy
+
+If deployment still fails, check: Render → Logs tab for latest error
+
 ## Prerequisites
 
 Bạn đã setup:
