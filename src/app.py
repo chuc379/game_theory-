@@ -197,23 +197,23 @@ class GameApplication:
         host = host or "0.0.0.0"
         port = port or settings.SOCKET_IO_PORT
 
-        # Create app
-        app = socket_gateway.create_app()
-        
-        # Setup Socket.io BEFORE creating the application
-        socket_gateway.setup(app)
-        self.app = socket_gateway.app
+        # Create aiohttp app
+        aiohttp_app = socket_gateway.create_app()
+
+        # Setup startup/shutdown on aiohttp app BEFORE Socket.io wrapping
+        aiohttp_app.on_startup.append(self.startup)
+        aiohttp_app.on_shutdown.append(self.shutdown)
+
+        # Setup Socket.io (wraps aiohttp app in ASGI)
+        socket_gateway.setup(aiohttp_app)
+        asgi_app = socket_gateway.app  # This is the ASGI wrapped app
 
         # Setup handlers
         self.setup_socket_handlers()
 
-        # Setup startup/shutdown
-        self.app.on_startup.append(self.startup)
-        self.app.on_shutdown.append(self.shutdown)
-
-        # Run (aiohttp handles async internally)
+        # Run with ASGI app
         logger.info(f"Starting server on {host}:{port}")
-        web.run_app(self.app, host=host, port=port)
+        web.run_app(asgi_app, host=host, port=port)
 
 
 def create_app() -> GameApplication:
