@@ -184,6 +184,7 @@ class GameApplication:
     async def startup(self, app: web.Application) -> None:
         """Startup event handler"""
         logger.info("Application starting...")
+        await self.initialize()
 
     async def shutdown(self, app: web.Application) -> None:
         """Shutdown event handler"""
@@ -191,9 +192,9 @@ class GameApplication:
         await redis_client.disconnect()
         rabbitmq_client.disconnect()
 
-    async def run(self, host: str = None, port: int = None) -> None:
+    def run(self, host: str = None, port: int = None) -> None:
         """Run application"""
-        host = host or settings.SOCKET_IO_PORT
+        host = host or "0.0.0.0"
         port = port or settings.SOCKET_IO_PORT
 
         # Create app
@@ -207,10 +208,7 @@ class GameApplication:
         self.app.on_startup.append(self.startup)
         self.app.on_shutdown.append(self.shutdown)
 
-        # Initialize
-        await self.initialize()
-
-        # Run
+        # Run (aiohttp handles async internally)
         logger.info(f"Starting server on {host}:{port}")
         web.run_app(self.app, host=host, port=port)
 
@@ -226,4 +224,4 @@ if __name__ == "__main__":
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
     app = create_app()
-    asyncio.run(app.run())
+    app.run()
