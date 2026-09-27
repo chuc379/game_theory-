@@ -31,6 +31,7 @@ class SocketGateway:
         app = web.Application()
         app.router.add_get("/health", SocketGateway._health_handler)
         app.router.add_get("/api/swagger.json", SocketGateway._swagger_handler)
+        app.router.add_get("/api/docs", SocketGateway._swagger_ui_handler)
         return app
 
     @staticmethod
@@ -43,6 +44,38 @@ class SocketGateway:
         """Swagger spec endpoint"""
         from src.shared.infrastructure.swagger import SWAGGER_SPEC
         return web.json_response(SWAGGER_SPEC)
+
+    @staticmethod
+    async def _swagger_ui_handler(request):
+        """Serve Swagger UI HTML"""
+        html = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Game Theory API - Swagger UI</title>
+            <meta charset="utf-8"/>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@3/swagger-ui.css">
+        </head>
+        <body>
+            <div id="swagger-ui"></div>
+            <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@3/swagger-ui.js"></script>
+            <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@3/swagger-ui-standalone-preset.js"></script>
+            <script>
+            const ui = SwaggerUIBundle({
+                url: "/api/swagger.json",
+                dom_id: '#swagger-ui',
+                presets: [
+                    SwaggerUIBundle.presets.apis,
+                    SwaggerUIStandalonePreset
+                ],
+                layout: "BaseLayout"
+            })
+            </script>
+        </body>
+        </html>
+        """
+        return web.Response(text=html, content_type="text/html")
 
     def on(self, event: str, namespace: Optional[str] = None) -> Callable:
         """Register event handler"""
