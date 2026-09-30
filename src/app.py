@@ -193,6 +193,32 @@ class GameApplication:
                 logger.error(f"Error in calculate_result: {e}")
                 await socket_gateway.emit_async("error", {"error": str(e)}, to=sid)
 
+        @socket_gateway.sio.on("start_round")
+        async def on_start_round(sid, data):
+            logger.info(f"Start round event from {sid}: {data}")
+            try:
+                room_id = data.get("room_id")
+                
+                # Broadcast round_started to all players in room
+                await socket_gateway.broadcast(
+                    "round_started",
+                    {
+                        "room_id": room_id,
+                        "round_id": data.get("round_id", 1),
+                    },
+                    skip_sid=sid,
+                )
+                
+                # Confirm to MC
+                await socket_gateway.emit_async(
+                    "start_round_response",
+                    {"success": True, "message": "Round started"},
+                    to=sid,
+                )
+            except Exception as e:
+                logger.error(f"Error in start_round: {e}")
+                await socket_gateway.emit_async("error", {"error": str(e)}, to=sid)
+
     async def shutdown(self) -> None:
         """Shutdown handler"""
         logger.info("Application shutting down...")
