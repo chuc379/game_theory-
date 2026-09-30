@@ -204,9 +204,24 @@ class GameApplication:
         """Main ASGI app that handles Socket.io and lifespan"""
         if scope["type"] == "lifespan":
             await self.lifespan(scope, receive, send)
+        elif scope["type"] == "http":
+            # Handle health check
+            if scope.get("path") == "/health":
+                await send({
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [[b"content-type", b"application/json"]],
+                })
+                await send({
+                    "type": "http.response.body",
+                    "body": b'{"status":"ok"}',
+                })
+                return
+            
+            # All other HTTP requests go to Socket.io
+            await socket_gateway(scope, receive, send)
         else:
-            # All HTTP/WebSocket requests go to Socket.io
-            # (Socket.io ASGI handles health checks too)
+            # WebSocket to Socket.io
             await socket_gateway(scope, receive, send)
 
 
