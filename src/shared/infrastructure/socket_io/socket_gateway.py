@@ -63,12 +63,12 @@ class SocketGateway:
     ) -> None:
         """Emit event to all clients in a room"""
         try:
-            # Use skip_sid to skip a specific client
+            # python-socketio uses 'to' parameter for rooms, not 'room'
             await self.sio.emit(
                 event,
                 data,
+                to=room,
                 skip_sid=skip_sid,
-                room=room,
                 namespace=namespace,
             )
         except Exception as e:
