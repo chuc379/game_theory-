@@ -2,8 +2,6 @@
 Main application entry point - Socket.io gateway server
 """
 import logging
-import asyncio
-from aiohttp import web
 from config.settings import settings
 from src.shared.infrastructure.socket_io.socket_gateway import socket_gateway
 from src.shared.infrastructure.cache.redis_client import redis_client
@@ -37,7 +35,6 @@ class GameApplication:
     """Main game application"""
 
     def __init__(self):
-        self.app = None
         self.player_controller = None
         self.round_controller = None
         self.room_controller = None
@@ -181,39 +178,38 @@ class GameApplication:
                 logger.error(f"Error in calculate_result: {e}")
                 await socket_gateway.emit_async("error", {"error": str(e)}, to=sid)
 
-    async def startup(self, app: web.Application) -> None:
+    async def startup(self) -> None:
         """Startup event handler"""
         logger.info("Application starting...")
         await self.initialize()
 
-    async def shutdown(self, app: web.Application) -> None:
+    async def shutdown(self) -> None:
         """Shutdown event handler"""
         logger.info("Application shutting down...")
         await redis_client.disconnect()
         rabbitmq_client.disconnect()
 
     def run(self, host: str = None, port: int = None) -> None:
-        """Run application"""
+        """Run application with Uvicorn"""
+        import uvicorn
+        
         host = host or "0.0.0.0"
         port = port or settings.SOCKET_IO_PORT
 
         # Create aiohttp app
         aiohttp_app = socket_gateway.create_app()
 
-        # Setup startup/shutdown on aiohttp app BEFORE Socket.io wrapping
-        aiohttp_app.on_startup.append(self.startup)
-        aiohttp_app.on_shutdown.append(self.shutdown)
-
-        # Setup Socket.io (wraps aiohttp app in ASGI)
+        # Setup Socket.io with aiohttp app
         socket_gateway.setup(aiohttp_app)
-        asgi_app = socket_gateway.app  # This is the ASGI wrapped app
 
-        # Setup handlers
+        # Setup handlers before running
         self.setup_socket_handlers()
 
-        # Run with ASGI app
+        # Get ASGI app (Socket.io wrapped)
+        asgi_app = socket_gateway.app
+
         logger.info(f"Starting server on {host}:{port}")
-        web.run_app(asgi_app, host=host, port=port)
+        uvicorn.run(asgi_app, host=host, port=port, log_level="info")
 
 
 def create_app() -> GameApplication:

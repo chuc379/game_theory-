@@ -5,7 +5,7 @@ services:
     runtime: python
     plan: free
     buildCommand: cd BE && pip install -r requirements.txt
-    startCommand: cd BE && python -m src.app
+    startCommand: cd BE && python src/app.py
     envVars:
       - key: REDIS_URL
         value: rediss://default:gQAAAAAABJrbAAIgcDFjMDIzOGY3NzY0NmM0NDFjYTZmMDEzOTQ1MTc3ZjYxMg@patient-chimp-301787.upstash.io:6379
