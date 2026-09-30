@@ -204,9 +204,9 @@ class GameApplication:
         """Main ASGI app that handles both Socket.io and HTTP"""
         if scope["type"] == "lifespan":
             await self.lifespan(scope, receive, send)
-        elif scope["type"] in ("http", "websocket"):
+        elif scope["type"] == "http":
             # Handle health check
-            if scope["type"] == "http" and scope.get("path") == "/health":
+            if scope.get("path") == "/health":
                 await send({
                     "type": "http.response.start",
                     "status": 200,
@@ -218,8 +218,11 @@ class GameApplication:
                 })
                 return
             
-            # Pass everything else to Socket.io
-            await socket_gateway.handle_asgi(scope, receive, send)
+            # Pass HTTP requests to Socket.io ASGI app
+            await socket_gateway.asgi_app(scope, receive, send)
+        elif scope["type"] == "websocket":
+            # Pass WebSocket to Socket.io ASGI app
+            await socket_gateway.asgi_app(scope, receive, send)
 
 
 # Global app instance

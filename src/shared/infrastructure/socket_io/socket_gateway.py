@@ -21,9 +21,9 @@ class SocketGateway:
             logger=False,
         )
 
-    async def handle_asgi(self, scope, receive, send):
-        """Handle ASGI request - pass to Socket.io"""
-        await self.sio.handle(scope, receive, send)
+    async def __call__(self, scope, receive, send):
+        """ASGI callable - delegate to Socket.io's call method"""
+        await self.sio.call(scope, receive, send)
 
     def on(self, event: str, namespace: Optional[str] = None) -> Callable:
         """Register event handler"""
