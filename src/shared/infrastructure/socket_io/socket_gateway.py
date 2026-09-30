@@ -14,7 +14,14 @@ class SocketGateway:
     def __init__(self):
         self.sio = AsyncServer(
             async_mode="asgi",
-            cors_allowed_origins=["http://localhost:3000", "http://localhost:3001", "https://*"],
+            cors_allowed_origins=[
+                "http://localhost:3000",
+                "http://localhost:3001",
+                "http://localhost:5000",
+                "http://127.0.0.1:5000",
+                "http://127.0.0.1:3000",
+                "https://*",
+            ],
             ping_timeout=60,
             ping_interval=25,
             engineio_logger=False,

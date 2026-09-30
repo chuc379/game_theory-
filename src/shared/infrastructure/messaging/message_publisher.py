@@ -22,8 +22,8 @@ class MessagePublisher:
             self.broker.publish(routing_key, message)
             logger.info(f"Event published: {event.event_type} to {routing_key}")
         except Exception as e:
-            logger.error(f"Failed to publish event: {e}")
-            raise
+            logger.warning(f"RabbitMQ publish skipped because broker is unavailable: {e}")
+            return
 
     def publish_player_guess(self, event_data: Dict[str, Any]) -> None:
         """Publish player guess event"""

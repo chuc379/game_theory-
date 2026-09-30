@@ -52,15 +52,18 @@ class GameApplication:
         """Initialize application"""
         if self.initialized:
             return
-            
+
         try:
             # Connect to Redis
             await redis_client.connect()
             logger.info("Connected to Redis")
 
-            # Connect to RabbitMQ
-            rabbitmq_client.connect()
-            logger.info("Connected to RabbitMQ")
+            # Connect to RabbitMQ if configured; do not fail the app if broker is not running.
+            try:
+                rabbitmq_client.connect()
+                logger.info("Connected to RabbitMQ")
+            except Exception as e:
+                logger.warning(f"RabbitMQ unavailable during startup; continuing without broker: {e}")
 
             # Setup controllers with repositories and use cases
             self._setup_controllers()
@@ -119,9 +122,9 @@ class GameApplication:
                 result = await self.player_controller.join_room(request)
 
                 if result.get("success"):
-                    # Add socket to room
-                    socket_gateway.sio.enter_room(sid, f"room_{room_id}")
-                    
+                    # Add socket to room using the async API correctly
+                    await socket_gateway.sio.enter_room(sid, f"room_{room_id}")
+
                     if is_mc:
                         # MC creating/joining - save room info
                         await self.room_controller.save_room_info(room_id, {
@@ -133,7 +136,7 @@ class GameApplication:
                     else:
                         # Player joining - update room player count
                         await self.room_controller.update_player_count(room_id)
-                    
+
                     if not is_mc:
                         # Publish event to message broker (only for players, not MC)
                         message_publisher.publish_player_guess(
@@ -143,15 +146,16 @@ class GameApplication:
                                 "player": result.get("player"),
                             }
                         )
-                        # Broadcast to all in room
+                        # Broadcast to room without touching the global rooms() API;
+                        # this avoids the Python-SocketIO sid requirement and keeps the
+                        # rest of the app unchanged.
                         logger.info(f"Notifying others in room {room_id} about new player")
-                        for client_sid in socket_gateway.sio.rooms()[f"room_{room_id}"]:
-                            if client_sid != sid:
-                                await socket_gateway.emit_async(
-                                    "player_joined",
-                                    result.get("player"),
-                                    to=client_sid,
-                                )
+                        await socket_gateway.emit_async(
+                            "player_joined",
+                            result.get("player"),
+                            to=f"room_{room_id}",
+                            skip_sid=sid,
+                        )
 
                 await socket_gateway.emit_async("join_room_response", result, to=sid)
             except Exception as e:
