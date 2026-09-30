@@ -191,10 +191,11 @@ class GameApplication:
 
     def run(self, host: str = None, port: int = None) -> None:
         """Run application with Uvicorn"""
+        import os
         import uvicorn
         
         host = host or "0.0.0.0"
-        port = port or settings.SOCKET_IO_PORT
+        port = port or int(os.getenv("PORT", settings.SOCKET_IO_PORT))
 
         # Create aiohttp app
         aiohttp_app = socket_gateway.create_app()
