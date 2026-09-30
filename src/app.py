@@ -1,7 +1,8 @@
 """
-Main application entry point - Socket.io gateway server
+Main application entry point - Socket.io gateway server (ASGI)
 """
 import logging
+import os
 from config.settings import settings
 from src.shared.infrastructure.socket_io.socket_gateway import socket_gateway
 from src.shared.infrastructure.cache.redis_client import redis_client
@@ -38,9 +39,13 @@ class GameApplication:
         self.player_controller = None
         self.round_controller = None
         self.room_controller = None
+        self.initialized = False
 
     async def initialize(self) -> None:
         """Initialize application"""
+        if self.initialized:
+            return
+            
         try:
             # Connect to Redis
             await redis_client.connect()
@@ -54,6 +59,7 @@ class GameApplication:
             self._setup_controllers()
 
             logger.info("Application initialized successfully")
+            self.initialized = True
         except Exception as e:
             logger.error(f"Failed to initialize application: {e}")
             raise
@@ -178,44 +184,65 @@ class GameApplication:
                 logger.error(f"Error in calculate_result: {e}")
                 await socket_gateway.emit_async("error", {"error": str(e)}, to=sid)
 
-    async def startup(self) -> None:
-        """Startup event handler"""
-        logger.info("Application starting...")
-        await self.initialize()
+    async def lifespan(self, scope, receive, send):
+        """ASGI lifespan handler"""
+        message = await receive()
+        if message["type"] == "lifespan.startup":
+            try:
+                await self.initialize()
+                await send({"type": "lifespan.startup.complete"})
+            except Exception as e:
+                logger.error(f"Startup error: {e}")
+                await send({"type": "lifespan.startup.failed", "message": str(e)})
+        elif message["type"] == "lifespan.shutdown":
+            logger.info("Shutting down...")
+            await redis_client.disconnect()
+            rabbitmq_client.disconnect()
+            await send({"type": "lifespan.shutdown.complete"})
 
-    async def shutdown(self) -> None:
-        """Shutdown event handler"""
-        logger.info("Application shutting down...")
-        await redis_client.disconnect()
-        rabbitmq_client.disconnect()
-
-    def run(self, host: str = None, port: int = None) -> None:
-        """Run application with Uvicorn"""
-        import os
-        import uvicorn
-        
-        host = host or "0.0.0.0"
-        port = port or int(os.getenv("PORT", settings.SOCKET_IO_PORT))
-
-        # Create aiohttp app
-        aiohttp_app = socket_gateway.create_app()
-
-        # Setup Socket.io with aiohttp app
-        socket_gateway.setup(aiohttp_app)
-
-        # Setup handlers before running
-        self.setup_socket_handlers()
-
-        # Get ASGI app (Socket.io wrapped)
-        asgi_app = socket_gateway.app
-
-        logger.info(f"Starting server on {host}:{port}")
-        uvicorn.run(asgi_app, host=host, port=port, log_level="info")
+    async def asgi_app(self, scope, receive, send):
+        """Main ASGI app that handles both Socket.io and HTTP"""
+        if scope["type"] == "lifespan":
+            await self.lifespan(scope, receive, send)
+        elif scope["type"] in ("http", "websocket"):
+            # Handle health check
+            if scope["type"] == "http" and scope.get("path") == "/health":
+                await send({
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [[b"content-type", b"application/json"]],
+                })
+                await send({
+                    "type": "http.response.body",
+                    "body": b'{"status":"ok"}',
+                })
+                return
+            
+            # Pass everything else to Socket.io
+            await socket_gateway.handle_asgi(scope, receive, send)
 
 
-def create_app() -> GameApplication:
-    """Factory function to create application"""
-    return GameApplication()
+# Global app instance
+app_instance = GameApplication()
+
+
+async def app(scope, receive, send):
+    """ASGI app entrypoint"""
+    await app_instance.asgi_app(scope, receive, send)
+
+
+def run_server(host: str = None, port: int = None) -> None:
+    """Run application with Uvicorn"""
+    import uvicorn
+    
+    host = host or "0.0.0.0"
+    port = port or int(os.getenv("PORT", settings.SOCKET_IO_PORT))
+
+    # Setup handlers before running
+    app_instance.setup_socket_handlers()
+
+    logger.info(f"Starting server on {host}:{port}")
+    uvicorn.run("src.app:app", host=host, port=port, log_level="info", reload=False)
 
 
 if __name__ == "__main__":
@@ -223,5 +250,4 @@ if __name__ == "__main__":
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
-    app = create_app()
-    app.run()
+    run_server()

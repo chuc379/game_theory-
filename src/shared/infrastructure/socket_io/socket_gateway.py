@@ -1,10 +1,9 @@
 """
-Socket.io gateway - Real-time communication adapter
+Socket.io gateway - Real-time communication adapter (ASGI)
 """
 import logging
 from typing import Callable, Optional, Dict, Any
-from socketio import AsyncServer, ASGIApp
-from aiohttp import web
+from socketio import AsyncServer
 
 logger = logging.getLogger(__name__)
 
@@ -14,96 +13,17 @@ class SocketGateway:
 
     def __init__(self):
         self.sio = AsyncServer(
-            async_mode="aiohttp",
+            async_mode="asgi",
             cors_allowed_origins=["http://localhost:3000", "http://localhost:3001", "https://*"],
             ping_timeout=60,
             ping_interval=25,
             engineio_logger=False,
             logger=False,
         )
-        self.app = None
 
-    def setup(self, app: web.Application) -> None:
-        """Setup Socket.io with aiohttp app"""
-        self.app = ASGIApp(self.sio, app)
-
-    @staticmethod
-    def create_app() -> web.Application:
-        """Create aiohttp application"""
-        app = web.Application()
-        
-        # CORS middleware
-        @web.middleware
-        async def cors_middleware(request, handler):
-            try:
-                response = await handler(request)
-            except web.HTTPException as ex:
-                response = ex
-            
-            response.headers['Access-Control-Allow-Origin'] = '*'
-            response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS, PUT, DELETE'
-            response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-            return response
-        
-        app.middlewares.append(cors_middleware)
-        app.router.add_get("/health", SocketGateway._health_handler)
-        app.router.add_get("/api/swagger.json", SocketGateway._swagger_handler)
-        app.router.add_get("/api/docs", SocketGateway._swagger_ui_handler)
-        return app
-
-    @staticmethod
-    async def _health_handler(request):
-        """Health check endpoint"""
-        return web.json_response({"status": "ok"})
-
-    @staticmethod
-    async def _swagger_handler(request):
-        """Swagger spec endpoint"""
-        from src.shared.infrastructure.swagger import SWAGGER_SPEC
-        return web.json_response(SWAGGER_SPEC)
-
-    @staticmethod
-    async def _swagger_ui_handler(request):
-        """Serve Swagger UI HTML"""
-        html = """
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Game Theory API - Swagger UI</title>
-            <meta charset="utf-8"/>
-            <meta name="viewport" content="width=device-width, initial-scale=1">
-            <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@4/swagger-ui.css">
-            <style>
-                html { box-sizing: border-box; overflow: -moz-scrollbars-vertical; overflow-y: scroll; }
-                *, *:before, *:after { box-sizing: inherit; }
-                body { margin:0; padding: 0; }
-            </style>
-        </head>
-        <body>
-            <div id="swagger-ui"></div>
-            <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@4/swagger-ui-bundle.js" charset="UTF-8"></script>
-            <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@4/swagger-ui-standalone-preset.js" charset="UTF-8"></script>
-            <script>
-                window.onload = function() {
-                    window.ui = SwaggerUIBundle({
-                        url: "/api/swagger.json",
-                        dom_id: '#swagger-ui',
-                        deepLinking: true,
-                        presets: [
-                            SwaggerUIBundle.presets.apis,
-                            SwaggerUIStandalonePreset
-                        ],
-                        plugins: [
-                            SwaggerUIBundle.plugins.DownloadUrl
-                        ],
-                        layout: "StandaloneLayout"
-                    })
-                }
-            </script>
-        </body>
-        </html>
-        """
-        return web.Response(text=html, content_type="text/html")
+    async def handle_asgi(self, scope, receive, send):
+        """Handle ASGI request - pass to Socket.io"""
+        await self.sio.handle(scope, receive, send)
 
     def on(self, event: str, namespace: Optional[str] = None) -> Callable:
         """Register event handler"""
@@ -144,10 +64,6 @@ class SocketGateway:
     async def get_client_ids(self, namespace: Optional[str] = None) -> list:
         """Get all connected client IDs"""
         return list(self.sio.rooms(namespace=namespace).keys())
-
-    def run(self, host: str = "0.0.0.0", port: int = 5000) -> None:
-        """Run Socket.io server"""
-        web.run_app(self.app, host=host, port=port)
 
 
 socket_gateway = SocketGateway()
