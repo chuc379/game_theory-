@@ -108,6 +108,8 @@ class GameApplication:
             logger.info(f"Join room event from {sid}: {data}")
             try:
                 room_id = data.get("room_id")
+                is_mc = data.get("is_mc", False)
+                
                 request = {
                     "room_id": room_id,
                     "player_name": data.get("player_name"),
@@ -119,24 +121,22 @@ class GameApplication:
                     # Add socket to room
                     socket_gateway.sio.enter_room(sid, f"room_{room_id}")
                     
-                    # Publish event to message broker
-                    message_publisher.publish_player_guess(
-                        {
-                            "room_id": room_id,
-                            "event": "PLAYER_JOINED",
-                            "player": result.get("player"),
-                        }
-                    )
-                    # Broadcast to room (except sender)
-                    await socket_gateway.emit_async(
-                        "player_joined",
-                        result.get("player"),
-                        to=f"room_{room_id}",
-                        skip_sid=sid,
-                    )
-                    
-                    # TODO: Check if round is active and send round_started to this player
-                    # For now, this will be handled by MC broadcasting
+                    if not is_mc:
+                        # Publish event to message broker (only for players, not MC)
+                        message_publisher.publish_player_guess(
+                            {
+                                "room_id": room_id,
+                                "event": "PLAYER_JOINED",
+                                "player": result.get("player"),
+                            }
+                        )
+                        # Broadcast to room (except sender)
+                        await socket_gateway.emit_async(
+                            "player_joined",
+                            result.get("player"),
+                            to=f"room_{room_id}",
+                            skip_sid=sid,
+                        )
 
                 await socket_gateway.emit_async("join_room_response", result, to=sid)
             except Exception as e:
