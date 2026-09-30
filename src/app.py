@@ -151,11 +151,14 @@ class GameApplication:
                 from src.modules.game_round.controller.round_controller import validate_submit_guess
                 valid, error = validate_submit_guess(data)
                 if not valid:
+                    logger.warning(f"Invalid submit_guess: {error}")
                     await socket_gateway.emit_async("error", {"error": error}, to=sid)
                     return
                 
                 room_id = data.get("room_id")
+                logger.info(f"Processing submit_guess for player {data.get('player_id')} in room {room_id}")
                 result = await self.round_controller.submit_guess(data)
+                logger.info(f"Submit guess result: {result}")
 
                 if result.get("success"):
                     # Publish to message broker for worker
@@ -169,15 +172,17 @@ class GameApplication:
                         }
                     )
                     # Broadcast to room
+                    logger.info(f"Broadcasting player_submitted to room_{room_id}")
                     await socket_gateway.emit_async(
                         "player_submitted",
                         result.get("guess"),
                         to=f"room_{room_id}",
                     )
+                    logger.info(f"Broadcasted player_submitted")
 
                 await socket_gateway.emit_async("submit_guess_response", result, to=sid)
             except Exception as e:
-                logger.error(f"Error in submit_guess: {e}")
+                logger.error(f"Error in submit_guess: {e}", exc_info=True)
                 await socket_gateway.emit_async("error", {"error": str(e)}, to=sid)
 
         @socket_gateway.sio.on("calculate_result")
