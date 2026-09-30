@@ -4,6 +4,7 @@ Socket.io gateway - Real-time communication adapter (ASGI)
 import logging
 from typing import Callable, Optional, Dict, Any
 from socketio import AsyncServer
+from engineio.async_drivers.asgi import ASGIApp
 
 logger = logging.getLogger(__name__)
 
@@ -20,10 +21,12 @@ class SocketGateway:
             engineio_logger=False,
             logger=False,
         )
+        # Create ASGI app from Socket.io's engineio
+        self.asgi_app = ASGIApp(self.sio.eio)
 
     async def __call__(self, scope, receive, send):
-        """ASGI callable - delegate to Socket.io's call method"""
-        await self.sio.call(scope, receive, send)
+        """ASGI callable"""
+        await self.asgi_app(scope, receive, send)
 
     def on(self, event: str, namespace: Optional[str] = None) -> Callable:
         """Register event handler"""
