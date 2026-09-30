@@ -1,8 +1,12 @@
 """
-Main application entry point - Socket.io gateway server (ASGI)
+Main application entry point - Socket.io gateway server (Starlette)
 """
 import logging
 import os
+from starlette.applications import Starlette
+from starlette.responses import JSONResponse
+from starlette.routing import Route, WebSocketRoute
+from starlette.middleware.cors import CORSMiddleware
 from config.settings import settings
 from src.shared.infrastructure.socket_io.socket_gateway import socket_gateway
 from src.shared.infrastructure.cache.redis_client import redis_client
@@ -57,6 +61,9 @@ class GameApplication:
 
             # Setup controllers with repositories and use cases
             self._setup_controllers()
+
+            # Setup Socket.io handlers
+            self.setup_socket_handlers()
 
             logger.info("Application initialized successfully")
             self.initialized = True
@@ -184,73 +191,65 @@ class GameApplication:
                 logger.error(f"Error in calculate_result: {e}")
                 await socket_gateway.emit_async("error", {"error": str(e)}, to=sid)
 
-    async def lifespan(self, scope, receive, send):
-        """ASGI lifespan handler"""
-        message = await receive()
-        if message["type"] == "lifespan.startup":
-            try:
-                await self.initialize()
-                await send({"type": "lifespan.startup.complete"})
-            except Exception as e:
-                logger.error(f"Startup error: {e}")
-                await send({"type": "lifespan.startup.failed", "message": str(e)})
-        elif message["type"] == "lifespan.shutdown":
-            logger.info("Shutting down...")
-            await redis_client.disconnect()
-            rabbitmq_client.disconnect()
-            await send({"type": "lifespan.shutdown.complete"})
-
-    async def asgi_app(self, scope, receive, send):
-        """Main ASGI app that handles Socket.io and lifespan"""
-        if scope["type"] == "lifespan":
-            await self.lifespan(scope, receive, send)
-        elif scope["type"] == "http":
-            # Handle health check
-            if scope.get("path") == "/health":
-                await send({
-                    "type": "http.response.start",
-                    "status": 200,
-                    "headers": [[b"content-type", b"application/json"]],
-                })
-                await send({
-                    "type": "http.response.body",
-                    "body": b'{"status":"ok"}',
-                })
-                return
-            
-            # All other HTTP requests go to Socket.io
-            await socket_gateway(scope, receive, send)
-        else:
-            # WebSocket to Socket.io
-            await socket_gateway(scope, receive, send)
+    async def shutdown(self) -> None:
+        """Shutdown handler"""
+        logger.info("Application shutting down...")
+        await redis_client.disconnect()
+        rabbitmq_client.disconnect()
 
 
 # Global app instance
 app_instance = GameApplication()
 
 
-async def app(scope, receive, send):
-    """ASGI app entrypoint"""
-    await app_instance.asgi_app(scope, receive, send)
+# HTTP endpoints
+async def health(request):
+    """Health check endpoint"""
+    return JSONResponse({"status": "ok"})
 
 
-def run_server(host: str = None, port: int = None) -> None:
-    """Run application with Uvicorn"""
-    import uvicorn
-    
-    host = host or "0.0.0.0"
-    port = port or int(os.getenv("PORT", settings.SOCKET_IO_PORT))
+# Starlette app
+app = Starlette(
+    debug=settings.DEBUG,
+    routes=[
+        Route("/health", health),
+        WebSocketRoute("/socket.io/", endpoint=socket_gateway.asgi_app),
+    ],
+)
 
-    # Setup handlers before running
-    app_instance.setup_socket_handlers()
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-    logger.info(f"Starting server on {host}:{port}")
-    uvicorn.run("src.app:app", host=host, port=port, log_level="info", reload=False)
+
+# Lifespan events
+@app.on_event("startup")
+async def startup():
+    """Startup event"""
+    await app_instance.initialize()
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    """Shutdown event"""
+    await app_instance.shutdown()
 
 
 if __name__ == "__main__":
+    import uvicorn
+    
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
-    run_server()
+    
+    host = "0.0.0.0"
+    port = int(os.getenv("PORT", settings.SOCKET_IO_PORT))
+    
+    logger.info(f"Starting server on {host}:{port}")
+    uvicorn.run("src.app:app", host=host, port=port, log_level="info", reload=False)

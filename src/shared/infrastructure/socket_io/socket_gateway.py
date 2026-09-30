@@ -24,10 +24,6 @@ class SocketGateway:
         # Create ASGI app from Socket.io's engineio
         self.asgi_app = ASGIApp(self.sio.eio)
 
-    async def __call__(self, scope, receive, send):
-        """ASGI callable"""
-        await self.asgi_app(scope, receive, send)
-
     def on(self, event: str, namespace: Optional[str] = None) -> Callable:
         """Register event handler"""
         return self.sio.on(event, namespace=namespace)
