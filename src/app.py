@@ -191,19 +191,37 @@ class GameApplication:
                     await socket_gateway.emit_async("error", {"error": error}, to=sid)
                     return
 
-                # Publish to worker queue
-                message_publisher.publish_calculate_result(
-                    {
-                        "room_id": data.get("room_id"),
-                        "round_id": data.get("round_id"),
-                    }
-                )
+                room_id = data.get("room_id")
+                round_id = data.get("round_id")
+                
+                # Calculate result synchronously
+                result = await self.round_controller.calculate_result({
+                    "room_id": room_id,
+                    "round_id": round_id,
+                })
 
-                await socket_gateway.emit_async(
-                    "calculate_result_response",
-                    {"success": True, "message": "Calculating result..."},
-                    to=sid,
-                )
+                if result.get("success"):
+                    # Broadcast result to room
+                    await socket_gateway.emit_async(
+                        "round_result_ready",
+                        {
+                            "result": result.get("result"),
+                        },
+                        to=f"room_{room_id}",
+                    )
+                    
+                    # Confirm to MC
+                    await socket_gateway.emit_async(
+                        "calculate_result_response",
+                        {"success": True, "message": "Result calculated", "result": result.get("result")},
+                        to=sid,
+                    )
+                else:
+                    await socket_gateway.emit_async(
+                        "error",
+                        {"error": result.get("error", "Failed to calculate result")},
+                        to=sid,
+                    )
             except Exception as e:
                 logger.error(f"Error in calculate_result: {e}")
                 await socket_gateway.emit_async("error", {"error": str(e)}, to=sid)
