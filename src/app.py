@@ -128,12 +128,15 @@ class GameApplication:
                         }
                     )
                     # Broadcast to room (except sender)
-                    await socket_gateway.sio.emit(
+                    await socket_gateway.emit_async(
                         "player_joined",
                         result.get("player"),
-                        room=f"room_{room_id}",
+                        to=f"room_{room_id}",
                         skip_sid=sid,
                     )
+                    
+                    # TODO: Check if round is active and send round_started to this player
+                    # For now, this will be handled by MC broadcasting
 
                 await socket_gateway.emit_async("join_room_response", result, to=sid)
             except Exception as e:
@@ -166,10 +169,10 @@ class GameApplication:
                         }
                     )
                     # Broadcast to room
-                    await socket_gateway.sio.emit(
+                    await socket_gateway.emit_async(
                         "player_submitted",
                         result.get("guess"),
-                        room=f"room_{room_id}",
+                        to=f"room_{room_id}",
                     )
 
                 await socket_gateway.emit_async("submit_guess_response", result, to=sid)
@@ -212,13 +215,13 @@ class GameApplication:
                 room_id = data.get("room_id")
                 
                 # Broadcast round_started to all players in room
-                await socket_gateway.sio.emit(
+                await socket_gateway.emit_async(
                     "round_started",
                     {
                         "room_id": room_id,
                         "round_id": data.get("round_id", 1),
                     },
-                    room=f"room_{room_id}",
+                    to=f"room_{room_id}",
                     skip_sid=sid,
                 )
                 
