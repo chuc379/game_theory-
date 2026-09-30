@@ -1,7 +1,6 @@
 """
 Socket.io gateway - Real-time communication adapter (ASGI)
 """
-import asyncio
 import logging
 from typing import Callable, Optional, Dict, Any
 from socketio import AsyncServer
@@ -52,16 +51,7 @@ class SocketGateway:
         namespace: Optional[str] = None,
     ) -> None:
         """Emit event asynchronously"""
-        # `AsyncServer.emit()` is synchronous in python-socketio; awaiting None is what
-        # produces the runtime error seen in production logs.
-        await asyncio.to_thread(
-            self.sio.emit,
-            event,
-            data,
-            to=to,
-            skip_sid=skip_sid,
-            namespace=namespace,
-        )
+        await self.sio.emit(event, data, to=to, skip_sid=skip_sid, namespace=namespace)
 
     async def emit_to_room(
         self,
@@ -74,8 +64,7 @@ class SocketGateway:
         """Emit event to all clients in a room"""
         try:
             # Use skip_sid to skip a specific client
-            await asyncio.to_thread(
-                self.sio.emit,
+            await self.sio.emit(
                 event,
                 data,
                 skip_sid=skip_sid,

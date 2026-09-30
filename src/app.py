@@ -122,8 +122,7 @@ class GameApplication:
                 result = await self.player_controller.join_room(request)
 
                 if result.get("success"):
-                    # Add socket to room using the async API correctly
-                    await socket_gateway.sio.enter_room(sid, f"room_{room_id}")
+                    socket_gateway.sio.enter_room(sid, f"room_{room_id}")
 
                     if is_mc:
                         # MC creating/joining - save room info
