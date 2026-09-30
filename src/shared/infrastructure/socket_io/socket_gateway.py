@@ -46,6 +46,22 @@ class SocketGateway:
         """Emit event asynchronously"""
         await self.sio.emit(event, data, to=to, skip_sid=skip_sid, namespace=namespace)
 
+    async def emit_to_room(
+        self,
+        event: str,
+        data: Dict[str, Any],
+        room: str,
+        skip_sid: Optional[str] = None,
+        namespace: Optional[str] = None,
+    ) -> None:
+        """Emit event to all clients in a room"""
+        # Get all clients in room, then emit to each
+        room_members = self.sio.rooms(namespace=namespace).get(room, set())
+        for member_sid in room_members:
+            if skip_sid and member_sid == skip_sid:
+                continue
+            await self.sio.emit(event, data, to=member_sid, namespace=namespace)
+
     async def broadcast(
         self,
         event: str,

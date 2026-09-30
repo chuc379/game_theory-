@@ -58,3 +58,21 @@ class RoomCacheRepository:
         except Exception as e:
             logger.error(f"Failed to get history: {e}")
             return []
+
+    async def get_all_rooms(self) -> List[dict]:
+        """Get all active rooms"""
+        try:
+            # Find all room:info:* keys
+            pattern = REDIS_ROOM_INFO.format(room_id="*")
+            keys = await self.cache.keys(pattern)
+            
+            rooms = []
+            for key in keys:
+                room_data = await self.cache.get_json(key)
+                if room_data:
+                    rooms.append(room_data)
+            
+            return rooms
+        except Exception as e:
+            logger.error(f"Failed to get all rooms: {e}")
+            return []

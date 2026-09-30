@@ -3,6 +3,7 @@ Main application entry point - Socket.io gateway server (Starlette)
 """
 import logging
 import os
+from datetime import datetime
 from contextlib import asynccontextmanager
 from socketio import ASGIApp
 from starlette.applications import Starlette
@@ -121,6 +122,18 @@ class GameApplication:
                     # Add socket to room
                     socket_gateway.sio.enter_room(sid, f"room_{room_id}")
                     
+                    if is_mc:
+                        # MC creating/joining - save room info
+                        await self.room_controller.save_room_info(room_id, {
+                            "room_id": room_id,
+                            "created_at": datetime.now().isoformat(),
+                            "player_count": 1,
+                            "mc_name": data.get("player_name"),
+                        })
+                    else:
+                        # Player joining - update room player count
+                        await self.room_controller.update_player_count(room_id)
+                    
                     if not is_mc:
                         # Publish event to message broker (only for players, not MC)
                         message_publisher.publish_player_guess(
@@ -131,10 +144,10 @@ class GameApplication:
                             }
                         )
                         # Broadcast to room (except sender)
-                        await socket_gateway.emit_async(
+                        await socket_gateway.emit_to_room(
                             "player_joined",
                             result.get("player"),
-                            to=f"room_{room_id}",
+                            room=f"room_{room_id}",
                             skip_sid=sid,
                         )
 
@@ -173,10 +186,10 @@ class GameApplication:
                     )
                     # Broadcast to room
                     logger.info(f"Broadcasting player_submitted to room_{room_id}")
-                    await socket_gateway.emit_async(
+                    await socket_gateway.emit_to_room(
                         "player_submitted",
                         result.get("guess"),
-                        to=f"room_{room_id}",
+                        room=f"room_{room_id}",
                     )
                     logger.info(f"Broadcasted player_submitted")
 
@@ -207,12 +220,12 @@ class GameApplication:
 
                 if result.get("success"):
                     # Broadcast result to room
-                    await socket_gateway.emit_async(
+                    await socket_gateway.emit_to_room(
                         "round_result_ready",
                         {
                             "result": result.get("result"),
                         },
-                        to=f"room_{room_id}",
+                        room=f"room_{room_id}",
                     )
                     
                     # Confirm to MC
@@ -238,13 +251,13 @@ class GameApplication:
                 room_id = data.get("room_id")
                 
                 # Broadcast round_started to all players in room
-                await socket_gateway.emit_async(
+                await socket_gateway.emit_to_room(
                     "round_started",
                     {
                         "room_id": room_id,
                         "round_id": data.get("round_id", 1),
                     },
-                    to=f"room_{room_id}",
+                    room=f"room_{room_id}",
                     skip_sid=sid,
                 )
                 
@@ -256,6 +269,21 @@ class GameApplication:
                 )
             except Exception as e:
                 logger.error(f"Error in start_round: {e}")
+                await socket_gateway.emit_async("error", {"error": str(e)}, to=sid)
+
+        @socket_gateway.sio.on("list_rooms")
+        async def on_list_rooms(sid, data):
+            logger.info(f"List rooms request from {sid}")
+            try:
+                # Get all active rooms from Redis
+                rooms = await self.room_controller.list_rooms()
+                await socket_gateway.emit_async(
+                    "rooms_list",
+                    {"success": True, "rooms": rooms},
+                    to=sid,
+                )
+            except Exception as e:
+                logger.error(f"Error in list_rooms: {e}")
                 await socket_gateway.emit_async("error", {"error": str(e)}, to=sid)
 
     async def shutdown(self) -> None:

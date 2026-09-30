@@ -21,6 +21,33 @@ class RoomController:
     def __init__(self, room_repository):
         self.room_repo = room_repository
 
+    async def list_rooms(self) -> list:
+        """Get all active rooms"""
+        try:
+            rooms = await self.room_repo.get_all_rooms()
+            return rooms or []
+        except Exception as e:
+            logger.error(f"Error listing rooms: {e}")
+            return []
+
+    async def save_room_info(self, room_id: str, info: dict) -> None:
+        """Save room info"""
+        try:
+            await self.room_repo.save_info(room_id, info)
+        except Exception as e:
+            logger.error(f"Error saving room info: {e}")
+            raise
+
+    async def update_player_count(self, room_id: str) -> None:
+        """Increment player count for room"""
+        try:
+            room_info = await self.room_repo.find_info(room_id)
+            if room_info:
+                room_info["player_count"] = room_info.get("player_count", 0) + 1
+                await self.room_repo.save_info(room_id, room_info)
+        except Exception as e:
+            logger.error(f"Error updating player count: {e}")
+
     async def create_room(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """Create new room"""
         try:
