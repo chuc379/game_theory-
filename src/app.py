@@ -3,9 +3,11 @@ Main application entry point - Socket.io gateway server (Starlette)
 """
 import logging
 import os
+from contextlib import asynccontextmanager
+from socketio import ASGIApp
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
-from starlette.routing import Route, WebSocketRoute
+from starlette.routing import Route
 from starlette.middleware.cors import CORSMiddleware
 from config.settings import settings
 from src.shared.infrastructure.socket_io.socket_gateway import socket_gateway
@@ -208,17 +210,26 @@ async def health(request):
     return JSONResponse({"status": "ok"})
 
 
+@asynccontextmanager
+async def lifespan(app):
+    await app_instance.initialize()
+    try:
+        yield
+    finally:
+        await app_instance.shutdown()
+
+
 # Starlette app
-app = Starlette(
+starlette_app = Starlette(
     debug=settings.DEBUG,
     routes=[
         Route("/health", health),
-        WebSocketRoute("/socket.io/", endpoint=socket_gateway.asgi_app),
     ],
+    lifespan=lifespan,
 )
 
 # CORS middleware
-app.add_middleware(
+starlette_app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
@@ -227,17 +238,8 @@ app.add_middleware(
 )
 
 
-# Lifespan events
-@app.on_event("startup")
-async def startup():
-    """Startup event"""
-    await app_instance.initialize()
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    """Shutdown event"""
-    await app_instance.shutdown()
+# Socket.IO handles polling and WebSocket traffic; Starlette handles other routes.
+app = ASGIApp(socket_gateway.sio, other_asgi_app=starlette_app)
 
 
 if __name__ == "__main__":
