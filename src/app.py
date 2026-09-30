@@ -218,11 +218,11 @@ class GameApplication:
                 })
                 return
             
-            # Pass HTTP requests to Socket.io ASGI app
-            await socket_gateway.asgi_app(scope, receive, send)
+            # Pass HTTP requests to Socket.io
+            await socket_gateway(scope, receive, send)
         elif scope["type"] == "websocket":
-            # Pass WebSocket to Socket.io ASGI app
-            await socket_gateway.asgi_app(scope, receive, send)
+            # Pass WebSocket to Socket.io
+            await socket_gateway(scope, receive, send)
 
 
 # Global app instance
