@@ -117,7 +117,7 @@ class GameApplication:
 
                 if result.get("success"):
                     # Add socket to room
-                    await socket_gateway.sio.enter_room(sid, f"room_{room_id}")
+                    socket_gateway.sio.enter_room(sid, f"room_{room_id}")
                     
                     # Publish event to message broker
                     message_publisher.publish_player_guess(
