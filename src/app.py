@@ -143,8 +143,15 @@ class GameApplication:
                                 "player": result.get("player"),
                             }
                         )
-                        # Broadcast to room (except sender) - skip for now
-                        # await socket_gateway.emit_to_room(...)
+                        # Broadcast to all in room
+                        logger.info(f"Notifying others in room {room_id} about new player")
+                        for client_sid in socket_gateway.sio.rooms()[f"room_{room_id}"]:
+                            if client_sid != sid:
+                                await socket_gateway.emit_async(
+                                    "player_joined",
+                                    result.get("player"),
+                                    to=client_sid,
+                                )
 
                 await socket_gateway.emit_async("join_room_response", result, to=sid)
             except Exception as e:
