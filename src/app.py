@@ -107,25 +107,32 @@ class GameApplication:
         async def on_join_room(sid, data):
             logger.info(f"Join room event from {sid}: {data}")
             try:
+                room_id = data.get("room_id")
                 request = {
-                    "room_id": data.get("room_id"),
+                    "room_id": room_id,
                     "player_name": data.get("player_name"),
                     "socket_id": sid,
                 }
                 result = await self.player_controller.join_room(request)
 
                 if result.get("success"):
+                    # Add socket to room
+                    await socket_gateway.sio.enter_room(sid, f"room_{room_id}")
+                    
                     # Publish event to message broker
                     message_publisher.publish_player_guess(
                         {
-                            "room_id": data.get("room_id"),
+                            "room_id": room_id,
                             "event": "PLAYER_JOINED",
                             "player": result.get("player"),
                         }
                     )
-                    # Broadcast to room
-                    await socket_gateway.broadcast(
-                        "player_joined", result.get("player"), skip_sid=sid
+                    # Broadcast to room (except sender)
+                    await socket_gateway.sio.emit(
+                        "player_joined",
+                        result.get("player"),
+                        room=f"room_{room_id}",
+                        skip_sid=sid,
                     )
 
                 await socket_gateway.emit_async("join_room_response", result, to=sid)
@@ -144,13 +151,14 @@ class GameApplication:
                     await socket_gateway.emit_async("error", {"error": error}, to=sid)
                     return
                 
+                room_id = data.get("room_id")
                 result = await self.round_controller.submit_guess(data)
 
                 if result.get("success"):
                     # Publish to message broker for worker
                     message_publisher.publish_player_guess(
                         {
-                            "room_id": data.get("room_id"),
+                            "room_id": room_id,
                             "round_id": data.get("round_id"),
                             "playerId": data.get("player_id"),
                             "playerName": data.get("player_name"),
@@ -158,7 +166,11 @@ class GameApplication:
                         }
                     )
                     # Broadcast to room
-                    await socket_gateway.broadcast("player_submitted", result.get("guess"))
+                    await socket_gateway.sio.emit(
+                        "player_submitted",
+                        result.get("guess"),
+                        room=f"room_{room_id}",
+                    )
 
                 await socket_gateway.emit_async("submit_guess_response", result, to=sid)
             except Exception as e:
@@ -200,12 +212,13 @@ class GameApplication:
                 room_id = data.get("room_id")
                 
                 # Broadcast round_started to all players in room
-                await socket_gateway.broadcast(
+                await socket_gateway.sio.emit(
                     "round_started",
                     {
                         "room_id": room_id,
                         "round_id": data.get("round_id", 1),
                     },
+                    room=f"room_{room_id}",
                     skip_sid=sid,
                 )
                 
