@@ -143,13 +143,8 @@ class GameApplication:
                                 "player": result.get("player"),
                             }
                         )
-                        # Broadcast to room (except sender)
-                        await socket_gateway.emit_to_room(
-                            "player_joined",
-                            result.get("player"),
-                            room=f"room_{room_id}",
-                            skip_sid=sid,
-                        )
+                        # Broadcast to room (except sender) - skip for now
+                        # await socket_gateway.emit_to_room(...)
 
                 await socket_gateway.emit_async("join_room_response", result, to=sid)
             except Exception as e:
@@ -186,11 +181,14 @@ class GameApplication:
                     )
                     # Broadcast to room
                     logger.info(f"Broadcasting player_submitted to room_{room_id}")
-                    await socket_gateway.emit_to_room(
-                        "player_submitted",
-                        result.get("guess"),
-                        room=f"room_{room_id}",
-                    )
+                    try:
+                        await socket_gateway.emit_to_room(
+                            "player_submitted",
+                            result.get("guess"),
+                            room=f"room_{room_id}",
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to broadcast: {e}")
                     logger.info(f"Broadcasted player_submitted")
 
                 await socket_gateway.emit_async("submit_guess_response", result, to=sid)
@@ -220,13 +218,16 @@ class GameApplication:
 
                 if result.get("success"):
                     # Broadcast result to room
-                    await socket_gateway.emit_to_room(
-                        "round_result_ready",
-                        {
-                            "result": result.get("result"),
-                        },
-                        room=f"room_{room_id}",
-                    )
+                    try:
+                        await socket_gateway.emit_to_room(
+                            "round_result_ready",
+                            {
+                                "result": result.get("result"),
+                            },
+                            room=f"room_{room_id}",
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to broadcast result: {e}")
                     
                     # Confirm to MC
                     await socket_gateway.emit_async(
@@ -251,15 +252,18 @@ class GameApplication:
                 room_id = data.get("room_id")
                 
                 # Broadcast round_started to all players in room
-                await socket_gateway.emit_to_room(
-                    "round_started",
-                    {
-                        "room_id": room_id,
-                        "round_id": data.get("round_id", 1),
-                    },
-                    room=f"room_{room_id}",
-                    skip_sid=sid,
-                )
+                try:
+                    await socket_gateway.emit_to_room(
+                        "round_started",
+                        {
+                            "room_id": room_id,
+                            "round_id": data.get("round_id", 1),
+                        },
+                        room=f"room_{room_id}",
+                        skip_sid=sid,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to broadcast round_started: {e}")
                 
                 # Confirm to MC
                 await socket_gateway.emit_async(

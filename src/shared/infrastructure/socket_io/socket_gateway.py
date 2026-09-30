@@ -55,12 +55,12 @@ class SocketGateway:
         namespace: Optional[str] = None,
     ) -> None:
         """Emit event to all clients in a room"""
-        # Get all clients in room, then emit to each
-        room_members = self.sio.rooms(namespace=namespace).get(room, set())
-        for member_sid in room_members:
-            if skip_sid and member_sid == skip_sid:
-                continue
-            await self.sio.emit(event, data, to=member_sid, namespace=namespace)
+        try:
+            # Use skip_sid to skip a specific client
+            await self.sio.emit(event, data, skip_sid=skip_sid, room=room, namespace=namespace)
+        except Exception as e:
+            logger.error(f"Error emitting to room {room}: {e}")
+            raise
 
     async def broadcast(
         self,
