@@ -188,6 +188,40 @@ class GameApplication:
         )
         logger.info(f"Broadcast round {round_id} result for room {room_id}")
 
+    async def _calculate_inline(
+        self, room_id: str, round_id: int, force_calculate: bool
+    ) -> dict:
+        """Calculate a round inside the gateway when no worker is available"""
+        try:
+            result = await self.round_controller.calculate_result_use_case.execute(
+                room_id, round_id, force_calculate=force_calculate
+            )
+        except Exception as e:
+            logger.error(f"Inline calculation failed for room {room_id}: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+        if not result.get("success"):
+            logger.warning(
+                f"Inline calculation rejected for room {room_id} round {round_id}: "
+                f"{result.get('error')}"
+            )
+            return result
+
+        await self.room_controller.end_round(room_id)
+        await socket_gateway.emit_async(
+            "round_result_ready",
+            {
+                "room_id": room_id,
+                "round_id": round_id,
+                "result": result.get("result"),
+            },
+            to=f"room_{room_id}",
+        )
+        logger.info(
+            f"Broadcast round {round_id} result for room {room_id} (inline)"
+        )
+        return result
+
     async def on_round_result_failed_event(self, event: dict) -> None:
         """Handle round result failure coming back from the worker"""
         room_id = event.get("room_id")
@@ -356,12 +390,52 @@ class GameApplication:
                     await socket_gateway.emit_async("error", {"error": error}, to=sid)
                     return
 
+                force_calculate = get_force_calculate(data)
+
+                # If no worker is consuming, run the calculation inline so the
+                # round still completes instead of timing out.
+                worker_status = rabbitmq_client.queue_status(QUEUE_WORKER_CALCULATE_RESULTS)
+                worker_consumers = worker_status.get("consumers") or 0
+
+                if worker_consumers == 0:
+                    logger.warning(
+                        f"No worker consuming {QUEUE_WORKER_CALCULATE_RESULTS}; "
+                        f"calculating room {room_id} round {round_id} inline"
+                    )
+                    calculated = await self._calculate_inline(
+                        room_id, int(round_id), force_calculate
+                    )
+                    if not calculated.get("success"):
+                        await socket_gateway.emit_async(
+                            "error",
+                            {
+                                "error": calculated.get("error", "Calculation failed"),
+                                "room_id": room_id,
+                                "round_id": int(round_id),
+                            },
+                            to=sid,
+                        )
+                        return
+
+                    await socket_gateway.emit_async(
+                        "calculate_result_response",
+                        {
+                            "success": True,
+                            "status": "completed",
+                            "message": "Calculation completed inline (no worker available)",
+                            "room_id": room_id,
+                            "round_id": int(round_id),
+                        },
+                        to=sid,
+                    )
+                    return
+
                 # Hand the calculation to the worker
                 published = message_publisher.publish_calculate_result(
                     {
                         "room_id": room_id,
                         "round_id": int(round_id),
-                        "force_calculate": get_force_calculate(data),
+                        "force_calculate": force_calculate,
                     }
                 )
 
