@@ -35,6 +35,17 @@ from src.modules.room.controller.room_controller import RoomController
 
 # Message publisher
 from src.shared.infrastructure.messaging.message_publisher import message_publisher
+from src.shared.infrastructure.messaging.event_consumer import EventConsumer
+from src.shared.constants import (
+    QUEUE_GATEWAY_PLAYER_EVENTS,
+    QUEUE_GATEWAY_ROUND_RESULTS,
+    ROUND_DURATION_SECONDS,
+    ROUTING_KEY_PLAYER_JOINED,
+    ROUTING_KEY_PLAYER_SUBMIT,
+    ROUTING_KEY_ROUND_RESULT_FAILED,
+    ROUTING_KEY_ROUND_RESULT_READY,
+    RoundStatus,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +57,7 @@ class GameApplication:
         self.player_controller = None
         self.round_controller = None
         self.room_controller = None
+        self.event_consumer = None
         self.initialized = False
 
     async def initialize(self) -> None:
@@ -58,18 +70,18 @@ class GameApplication:
             await redis_client.connect()
             logger.info("Connected to Redis")
 
-            # Connect to RabbitMQ if configured; do not fail the app if broker is not running.
-            try:
-                rabbitmq_client.connect()
-                logger.info("Connected to RabbitMQ")
-            except Exception as e:
-                logger.warning(f"RabbitMQ unavailable during startup; continuing without broker: {e}")
+            # Connect to RabbitMQ
+            rabbitmq_client.connect()
+            logger.info("Connected to RabbitMQ")
 
             # Setup controllers with repositories and use cases
             self._setup_controllers()
 
             # Setup Socket.io handlers
             self.setup_socket_handlers()
+
+            # Setup broker subscriptions
+            await self._setup_event_consumer()
 
             logger.info("Application initialized successfully")
             self.initialized = True
@@ -84,16 +96,105 @@ class GameApplication:
         join_room_use_case = JoinRoomUseCase(player_repo)
         self.player_controller = PlayerController(join_room_use_case)
 
+        # Room
+        room_repo = RoomCacheRepository()
+        self.room_controller = RoomController(room_repo)
+
         # Game Round
         guess_repo = GuessCacheRepository()
         result_repo = RoundResultCacheRepository()
         submit_guess_use_case = SubmitGuessUseCase(guess_repo)
         calculate_result_use_case = CalculateResultUseCase(guess_repo, result_repo)
-        self.round_controller = RoundController(submit_guess_use_case, calculate_result_use_case)
+        self.round_controller = RoundController(
+            submit_guess_use_case, calculate_result_use_case, room_repo
+        )
 
-        # Room
-        room_repo = RoomCacheRepository()
-        self.room_controller = RoomController(room_repo)
+    async def _setup_event_consumer(self) -> None:
+        """Subscribe the gateway to the events it owns"""
+        self.event_consumer = EventConsumer()
+
+        self.event_consumer.subscribe(
+            QUEUE_GATEWAY_PLAYER_EVENTS,
+            ROUTING_KEY_PLAYER_JOINED,
+            self.on_player_joined_event,
+        )
+        self.event_consumer.subscribe(
+            QUEUE_GATEWAY_PLAYER_EVENTS,
+            ROUTING_KEY_PLAYER_SUBMIT,
+            self.on_player_submit_event,
+        )
+        self.event_consumer.subscribe(
+            QUEUE_GATEWAY_ROUND_RESULTS,
+            ROUTING_KEY_ROUND_RESULT_READY,
+            self.on_round_result_ready_event,
+        )
+        self.event_consumer.subscribe(
+            QUEUE_GATEWAY_ROUND_RESULTS,
+            ROUTING_KEY_ROUND_RESULT_FAILED,
+            self.on_round_result_failed_event,
+        )
+
+        await self.event_consumer.start()
+
+    async def on_player_joined_event(self, event: dict) -> None:
+        """Handle player joined event coming from the broker"""
+        room_id = event.get("room_id")
+        player = event.get("player")
+        if not room_id or not player:
+            logger.error(f"Malformed player joined event: {event}")
+            return
+
+        await self.room_controller.update_player_count(room_id)
+        await socket_gateway.emit_async(
+            "player_joined", player, to=f"room_{room_id}"
+        )
+
+    async def on_player_submit_event(self, event: dict) -> None:
+        """Handle player submitted event coming from the broker"""
+        room_id = event.get("room_id")
+        if not room_id:
+            logger.error(f"Malformed player submit event: {event}")
+            return
+
+        await socket_gateway.emit_async(
+            "player_submitted", event.get("guess"), to=f"room_{room_id}"
+        )
+
+    async def on_round_result_ready_event(self, event: dict) -> None:
+        """Handle computed round result coming back from the worker"""
+        room_id = event.get("room_id")
+        round_id = event.get("round_id")
+        if not room_id or round_id is None:
+            logger.error(f"Malformed round result event: {event}")
+            return
+
+        await self.room_controller.end_round(room_id)
+        await socket_gateway.emit_async(
+            "round_result_ready",
+            {
+                "room_id": room_id,
+                "round_id": round_id,
+                "result": event.get("result"),
+            },
+            to=f"room_{room_id}",
+        )
+        logger.info(f"Broadcast round {round_id} result for room {room_id}")
+
+    async def on_round_result_failed_event(self, event: dict) -> None:
+        """Handle round result failure coming back from the worker"""
+        room_id = event.get("room_id")
+        round_id = event.get("round_id")
+        if not room_id:
+            logger.error(f"Malformed round result failure event: {event}")
+            return
+
+        error = event.get("error") or "Failed to calculate result"
+        logger.warning(f"Round {round_id} failed for room {room_id}: {error}")
+        await socket_gateway.emit_async(
+            "error",
+            {"error": f"Round {round_id}: {error}", "room_id": room_id, "round_id": round_id},
+            to=f"room_{room_id}",
+        )
 
     def setup_socket_handlers(self) -> None:
         """Setup Socket.io event handlers"""
@@ -118,11 +219,12 @@ class GameApplication:
                     "room_id": room_id,
                     "player_name": data.get("player_name"),
                     "socket_id": sid,
+                    "player_id": data.get("player_id"),
                 }
                 result = await self.player_controller.join_room(request)
 
                 if result.get("success"):
-                    socket_gateway.sio.enter_room(sid, f"room_{room_id}")
+                    await socket_gateway.sio.enter_room(sid, f"room_{room_id}")
 
                     if is_mc:
                         # MC creating/joining - save room info
@@ -133,28 +235,31 @@ class GameApplication:
                             "mc_name": data.get("player_name"),
                         })
                     else:
-                        # Player joining - update room player count
-                        await self.room_controller.update_player_count(room_id)
-
-                    if not is_mc:
-                        # Publish event to message broker (only for players, not MC)
-                        message_publisher.publish_player_guess(
+                        # Player joining - announce through the broker
+                        message_publisher.publish_player_joined(
                             {
                                 "room_id": room_id,
-                                "event": "PLAYER_JOINED",
                                 "player": result.get("player"),
                             }
                         )
-                        # Broadcast to room without touching the global rooms() API;
-                        # this avoids the Python-SocketIO sid requirement and keeps the
-                        # rest of the app unchanged.
-                        logger.info(f"Notifying others in room {room_id} about new player")
-                        await socket_gateway.emit_async(
-                            "player_joined",
-                            result.get("player"),
-                            to=f"room_{room_id}",
-                            skip_sid=sid,
-                        )
+
+                        # Late joiner: replay the current round state so the
+                        # player UI does not wait for the next round.
+                        current_round = await self.room_controller.get_current_round(room_id)
+                        round_status = await self.room_controller.get_round_status(room_id)
+                        if current_round > 0 and round_status == RoundStatus.LOCKED:
+                            await socket_gateway.emit_async(
+                                "round_started",
+                                {
+                                    "room_id": room_id,
+                                    "round_id": current_round,
+                                    "duration": ROUND_DURATION_SECONDS,
+                                },
+                                to=sid,
+                            )
+                            logger.info(
+                                f"Replayed round {current_round} to late joiner {sid}"
+                            )
 
                 await socket_gateway.emit_async("join_room_response", result, to=sid)
             except Exception as e:
@@ -179,39 +284,32 @@ class GameApplication:
                 logger.info(f"Submit guess result: {result}")
 
                 if result.get("success"):
-                    # Publish to message broker for worker
                     message_publisher.publish_player_guess(
                         {
                             "room_id": room_id,
                             "round_id": data.get("round_id"),
-                            "playerId": data.get("player_id"),
-                            "playerName": data.get("player_name"),
-                            "guessNumber": data.get("guess_number"),
+                            "guess": result.get("guess"),
                         }
                     )
-                    # Broadcast to room
-                    logger.info(f"Broadcasting player_submitted to room_{room_id}")
-                    try:
-                        await socket_gateway.emit_to_room(
-                            "player_submitted",
-                            result.get("guess"),
-                            room=f"room_{room_id}",
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to broadcast: {e}")
-                    logger.info(f"Broadcasted player_submitted")
+                else:
+                    logger.warning(f"submit_guess rejected: {result.get('error')}")
 
                 await socket_gateway.emit_async("submit_guess_response", result, to=sid)
+
             except Exception as e:
                 logger.error(f"Error in submit_guess: {e}", exc_info=True)
                 await socket_gateway.emit_async("error", {"error": str(e)}, to=sid)
+
 
         @socket_gateway.sio.on("calculate_result")
         async def on_calculate_result(sid, data):
             logger.info(f"Calculate result event from {sid}: {data}")
             try:
                 # Validate request
-                from src.modules.game_round.controller.round_controller import validate_calculate_result
+                from src.modules.game_round.controller.round_controller import (
+                    get_force_calculate,
+                    validate_calculate_result,
+                )
                 valid, error = validate_calculate_result(data)
                 if not valid:
                     await socket_gateway.emit_async("error", {"error": error}, to=sid)
@@ -219,35 +317,45 @@ class GameApplication:
 
                 room_id = data.get("room_id")
                 round_id = data.get("round_id")
-                
-                # Calculate result synchronously
-                result = await self.round_controller.calculate_result(data)
 
-                if result.get("success"):
-                    # Broadcast result to room
-                    try:
-                        await socket_gateway.emit_to_room(
-                            "round_result_ready",
-                            {
-                                "result": result.get("result"),
-                            },
-                            room=f"room_{room_id}",
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to broadcast result: {e}")
-                    
-                    # Confirm to MC
-                    await socket_gateway.emit_async(
-                        "calculate_result_response",
-                        {"success": True, "message": "Result calculated", "result": result.get("result")},
-                        to=sid,
+                valid, error = await self.round_controller.validate_round(
+                    room_id, round_id
+                )
+                if not valid:
+                    logger.warning(
+                        f"calculate_result rejected for room {room_id} round {round_id}: {error}"
                     )
-                else:
+                    await socket_gateway.emit_async("error", {"error": error}, to=sid)
+                    return
+
+                # Hand the calculation to the worker
+                published = message_publisher.publish_calculate_result(
+                    {
+                        "room_id": room_id,
+                        "round_id": int(round_id),
+                        "force_calculate": get_force_calculate(data),
+                    }
+                )
+
+                if not published:
                     await socket_gateway.emit_async(
                         "error",
-                        {"error": result.get("error", "Failed to calculate result")},
+                        {"error": "Message broker unavailable, cannot calculate result"},
                         to=sid,
                     )
+                    return
+
+                await socket_gateway.emit_async(
+                    "calculate_result_response",
+                    {
+                        "success": True,
+                        "status": "queued",
+                        "message": "Calculation queued",
+                        "room_id": room_id,
+                        "round_id": int(round_id),
+                    },
+                    to=sid,
+                )
             except Exception as e:
                 logger.error(f"Error in calculate_result: {e}")
                 await socket_gateway.emit_async("error", {"error": str(e)}, to=sid)
@@ -257,14 +365,23 @@ class GameApplication:
             logger.info(f"Start round event from {sid}: {data}")
             try:
                 room_id = data.get("room_id")
-                
+                if not room_id:
+                    await socket_gateway.emit_async(
+                        "error", {"error": "room_id is required"}, to=sid
+                    )
+                    return
+
+                round_id = await self.room_controller.start_round(room_id)
+                logger.info(f"Room {room_id} started round {round_id}")
+
                 # Broadcast round_started to all players in room
                 try:
                     await socket_gateway.emit_to_room(
                         "round_started",
                         {
                             "room_id": room_id,
-                            "round_id": data.get("round_id", 1),
+                            "round_id": round_id,
+                            "duration": ROUND_DURATION_SECONDS,
                         },
                         room=f"room_{room_id}",
                         skip_sid=sid,
@@ -275,7 +392,13 @@ class GameApplication:
                 # Confirm to MC
                 await socket_gateway.emit_async(
                     "start_round_response",
-                    {"success": True, "message": "Round started"},
+                    {
+                        "success": True,
+                        "message": "Round started",
+                        "room_id": room_id,
+                        "round_id": round_id,
+                        "duration": ROUND_DURATION_SECONDS,
+                    },
                     to=sid,
                 )
             except Exception as e:
@@ -300,8 +423,10 @@ class GameApplication:
     async def shutdown(self) -> None:
         """Shutdown handler"""
         logger.info("Application shutting down...")
-        await redis_client.disconnect()
+        if self.event_consumer:
+            self.event_consumer.stop()
         rabbitmq_client.disconnect()
+        await redis_client.disconnect()
 
 
 # Global app instance
@@ -311,7 +436,12 @@ app_instance = GameApplication()
 # HTTP endpoints
 async def health(request):
     """Health check endpoint"""
-    return JSONResponse({"status": "ok"})
+    return JSONResponse(
+        {
+            "status": "ok",
+            "broker": "connected" if rabbitmq_client.consumer_alive else "disconnected",
+        }
+    )
 
 
 @asynccontextmanager

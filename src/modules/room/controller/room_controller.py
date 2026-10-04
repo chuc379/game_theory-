@@ -3,6 +3,7 @@ Room controller - API schema & handlers for room operations
 """
 import logging
 from typing import Dict, Any
+from src.shared.constants import RoundStatus
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,24 @@ class RoomController:
         except Exception as e:
             logger.error(f"Error saving room info: {e}")
             raise
+
+    async def get_current_round(self, room_id: str) -> int:
+        """Get authoritative current round of the room"""
+        return await self.room_repo.get_current_round(room_id)
+
+    async def start_round(self, room_id: str) -> int:
+        """Advance room to the next round and mark it as accepting guesses"""
+        round_id = await self.room_repo.next_round(room_id)
+        await self.room_repo.set_round_status(room_id, RoundStatus.LOCKED)
+        return round_id
+
+    async def end_round(self, room_id: str) -> None:
+        """Mark the current round as closed"""
+        await self.room_repo.set_round_status(room_id, RoundStatus.ENDED)
+
+    async def get_round_status(self, room_id: str) -> str:
+        """Get current round status of the room"""
+        return await self.room_repo.get_round_status(room_id)
 
     async def update_player_count(self, room_id: str) -> None:
         """Increment player count for room"""

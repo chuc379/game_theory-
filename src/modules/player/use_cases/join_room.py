@@ -15,21 +15,39 @@ class JoinRoomUseCase:
         self.player_repo = player_repository
         self.player_factory = PlayerFactory()
 
-    async def execute(self, room_id: str, player_name: str, socket_id: str) -> dict:
+    async def execute(
+        self,
+        room_id: str,
+        player_name: str,
+        socket_id: str,
+        player_id: str = None,
+    ) -> dict:
         """
-        Execute join room logic
+        Join room use case logic
         
         Args:
             room_id: Room identifier
             player_name: Player name
             socket_id: Socket.io connection ID
+            player_id: Stable client identity; reused when it already exists in the room
             
         Returns:
             dict with player data and status
         """
         try:
-            # Create new player
-            player = self.player_factory.create_player(player_name, socket_id)
+            existing = None
+            if player_id:
+                existing = await self.player_repo.find_by_id(room_id, player_id)
+
+            if existing:
+                existing.name = player_name.strip()
+                existing.update_socket(socket_id)
+                player = existing
+            else:
+                player = self.player_factory.create_player(
+                    player_name, socket_id, player_id=player_id
+                )
+
 
             # Validate
             if not player.is_valid():

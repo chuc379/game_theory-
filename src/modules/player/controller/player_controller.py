@@ -19,6 +19,10 @@ def validate_join_room(data: Dict[str, Any]) -> tuple[bool, str]:
     player_name = str(data.get("player_name", "")).strip()
     if len(player_name) == 0 or len(player_name) > 100:
         return False, "player_name must be 1-100 characters"
+
+    player_id = data.get("player_id")
+    if player_id is not None and not str(player_id).strip():
+        return False, "player_id must be a non-empty string"
     
     return True, ""
 
@@ -40,6 +44,7 @@ class PlayerController:
                 room_id=request.get("room_id"),
                 player_name=request.get("player_name"),
                 socket_id=request.get("socket_id"),
+                player_id=request.get("player_id") or None,
             )
             return result
         except Exception as e:

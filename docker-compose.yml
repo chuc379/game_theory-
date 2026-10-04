@@ -21,8 +21,8 @@ services:
       - "5672:5672"
       - "15672:15672"
     environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_DEFAULT_USER: game
+      RABBITMQ_DEFAULT_PASS: game
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
@@ -43,6 +43,8 @@ services:
       REDIS_PORT: 6379
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: 5672
+      RABBITMQ_USER: game
+      RABBITMQ_PASSWORD: game
       SOCKET_IO_PORT: 5000
       ENV: production
       DEBUG: false
@@ -65,6 +67,8 @@ services:
       REDIS_PORT: 6379
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: 5672
+      RABBITMQ_USER: game
+      RABBITMQ_PASSWORD: game
       WORKER_PORT: 5001
       ENV: production
       DEBUG: false

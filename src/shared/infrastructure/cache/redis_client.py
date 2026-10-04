@@ -58,6 +58,14 @@ class RedisClient:
         """Get value by key"""
         return await self.client.get(key)
 
+    async def incr(self, key: str, amount: int = 1) -> int:
+        """Atomically increment an integer key"""
+        return int(await self.client.incrby(key, amount))
+
+    async def keys(self, pattern: str) -> List[str]:
+        """Return keys matching a glob pattern"""
+        return await self.client.keys(pattern)
+
     async def get_json(self, key: str) -> Optional[dict]:
         """Get value and parse as JSON"""
         value = await self.get(key)

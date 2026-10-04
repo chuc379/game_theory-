@@ -43,6 +43,12 @@ class RoundResultReadyEvent(DomainEvent):
 
 
 @dataclass
+class RoundResultFailedEvent(DomainEvent):
+    """Event when round result could not be calculated"""
+    event_type: str = "ROUND_RESULT_FAILED"
+
+
+@dataclass
 class PlayerJoinedEvent(DomainEvent):
     """Event when player joined"""
     event_type: str = "PLAYER_JOINED"

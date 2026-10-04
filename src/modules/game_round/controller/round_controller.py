@@ -48,14 +48,47 @@ def get_force_calculate(data: Dict[str, Any]) -> bool:
 class RoundController:
     """Round controller - Handles round operations"""
 
-    def __init__(self, submit_guess_use_case, calculate_result_use_case):
+    def __init__(
+        self,
+        submit_guess_use_case,
+        calculate_result_use_case,
+        room_repository=None,
+    ):
         self.submit_guess_use_case = submit_guess_use_case
         self.calculate_result_use_case = calculate_result_use_case
+        self.room_repo = room_repository
+
+    async def validate_round(self, room_id: str, round_id: Any) -> tuple[bool, str]:
+        """Reject requests that target a round the room is not currently on"""
+        if self.room_repo is None:
+            return True, ""
+
+        try:
+            current_round = await self.room_repo.get_current_round(room_id)
+        except Exception as e:
+            logger.error(f"Failed to resolve current round for room {room_id}: {e}")
+            return True, ""
+
+        if current_round == 0:
+            return False, "No round has been started yet"
+
+        if int(round_id) != current_round:
+            return False, (
+                f"Round {round_id} is stale, room {room_id} is on round {current_round}"
+            )
+
+        return True, ""
 
     async def submit_guess(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """Submit player guess"""
         try:
             valid, error = validate_submit_guess(request)
+            if not valid:
+                return {"success": False, "error": error}
+
+            valid, error = await self.validate_round(
+                request.get("room_id"), request.get("round_id")
+            )
             if not valid:
                 return {"success": False, "error": error}
             
@@ -75,6 +108,12 @@ class RoundController:
         """Calculate round result"""
         try:
             valid, error = validate_calculate_result(request)
+            if not valid:
+                return {"success": False, "error": error}
+
+            valid, error = await self.validate_round(
+                request.get("room_id"), request.get("round_id")
+            )
             if not valid:
                 return {"success": False, "error": error}
             

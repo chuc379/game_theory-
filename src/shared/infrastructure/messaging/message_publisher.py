@@ -15,31 +15,67 @@ class MessagePublisher:
     def __init__(self, broker_client=rabbitmq_client):
         self.broker = broker_client
 
-    def publish_event(self, routing_key: str, event: DomainEvent) -> None:
+    @property
+    def available(self) -> bool:
+        """Whether the publisher connection is usable"""
+        return self.broker.channel is not None and self.broker.connection is not None \
+            and not self.broker.connection.is_closed
+
+    def publish_event(self, routing_key: str, event: DomainEvent) -> bool:
         """Publish domain event to message broker"""
         try:
             message = event.to_dict()
             self.broker.publish(routing_key, message)
             logger.info(f"Event published: {event.event_type} to {routing_key}")
+            return True
         except Exception as e:
-            logger.warning(f"RabbitMQ publish skipped because broker is unavailable: {e}")
-            return
+            logger.error(f"Failed to publish event to {routing_key}: {e}")
+            return False
 
-    def publish_player_guess(self, event_data: Dict[str, Any]) -> None:
+    def publish_player_joined(self, event_data: Dict[str, Any]) -> bool:
+        """Publish player joined event"""
+        from src.shared.constants import ROUTING_KEY_PLAYER_JOINED
+        from src.shared.domain.events import PlayerJoinedEvent
+
+        return self.publish_event(
+            ROUTING_KEY_PLAYER_JOINED, PlayerJoinedEvent(payload=event_data)
+        )
+
+    def publish_player_guess(self, event_data: Dict[str, Any]) -> bool:
         """Publish player guess event"""
         from src.shared.constants import ROUTING_KEY_PLAYER_SUBMIT
         from src.shared.domain.events import PlayerSubmitGuessEvent
 
-        event = PlayerSubmitGuessEvent(payload=event_data)
-        self.publish_event(ROUTING_KEY_PLAYER_SUBMIT, event)
+        return self.publish_event(
+            ROUTING_KEY_PLAYER_SUBMIT, PlayerSubmitGuessEvent(payload=event_data)
+        )
 
-    def publish_calculate_result(self, event_data: Dict[str, Any]) -> None:
-        """Publish calculate result event"""
-        from src.shared.constants import ROUTING_KEY_CALCULATE_RESULT
+    def publish_calculate_result(self, event_data: Dict[str, Any]) -> bool:
+        """Publish calculate result request event"""
+        from src.shared.constants import ROUTING_KEY_ROUND_CALCULATE
         from src.shared.domain.events import CalculateRoundResultEvent
 
-        event = CalculateRoundResultEvent(payload=event_data)
-        self.publish_event(ROUTING_KEY_CALCULATE_RESULT, event)
+        return self.publish_event(
+            ROUTING_KEY_ROUND_CALCULATE, CalculateRoundResultEvent(payload=event_data)
+        )
+
+    def publish_round_result_ready(self, event_data: Dict[str, Any]) -> bool:
+        """Publish round result ready event"""
+        from src.shared.constants import ROUTING_KEY_ROUND_RESULT_READY
+        from src.shared.domain.events import RoundResultReadyEvent
+
+        return self.publish_event(
+            ROUTING_KEY_ROUND_RESULT_READY, RoundResultReadyEvent(payload=event_data)
+        )
+
+    def publish_round_result_failed(self, event_data: Dict[str, Any]) -> bool:
+        """Publish round result failure event"""
+        from src.shared.constants import ROUTING_KEY_ROUND_RESULT_FAILED
+        from src.shared.domain.events import RoundResultFailedEvent
+
+        return self.publish_event(
+            ROUTING_KEY_ROUND_RESULT_FAILED, RoundResultFailedEvent(payload=event_data)
+        )
 
 
 message_publisher = MessagePublisher()
