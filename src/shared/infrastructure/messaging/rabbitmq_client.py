@@ -37,6 +37,7 @@ class RabbitMQClient:
         self._consumer_connection: Optional[pika.BlockingConnection] = None
         self._consumer_channel = None
         self._consumer_thread: Optional[threading.Thread] = None
+        self._declared_queues = set()
 
     def _build_parameters(self) -> pika.ConnectionParameters:
         if settings.RABBITMQ_URL:
@@ -70,6 +71,46 @@ class RabbitMQClient:
             logger.error(f"Failed to connect to RabbitMQ: {e}")
             raise
 
+    def _ensure_publisher_channel(self):
+        """Reopen the publisher channel if the broker or channel dropped it"""
+        if self.connection is not None and self.connection.is_open and self.channel is not None \
+                and self.channel.is_open:
+            return self.channel
+
+        logger.warning("Publisher channel unavailable, reconnecting")
+        self.connection = pika.BlockingConnection(self._build_parameters())
+        self.channel = self.connection.channel()
+        self._declare_exchange(self.channel)
+        return self.channel
+
+    def declare_queue(self, queue_name: str, routing_keys) -> None:
+        """Declare a durable queue and bind it to routing keys.
+
+        Publishers call this so events are buffered durably while a consumer
+        service is down, instead of being dropped by the exchange.
+        """
+        channel = self._ensure_publisher_channel()
+        channel.queue_declare(queue=queue_name, durable=True)
+        for routing_key in routing_keys:
+            channel.queue_bind(
+                exchange=RABBITMQ_EXCHANGE, queue=queue_name, routing_key=routing_key
+            )
+        self._declared_queues.add(queue_name)
+        logger.info(f"Declared queue {queue_name} for {list(routing_keys)}")
+
+    def queue_status(self, queue_name: str) -> dict:
+        """Return message and consumer counts for a queue without consuming it"""
+        status = {"queue": queue_name, "messages": None, "consumers": None}
+        try:
+            channel = self._ensure_publisher_channel()
+            info = channel.queue_declare(queue=queue_name, durable=True, passive=True)
+            status["messages"] = info.method.message_count
+            status["consumers"] = info.method.consumer_count
+        except Exception as e:
+            status["error"] = str(e)
+            self.channel = None
+        return status
+
     def disconnect(self):
         """Close all connections"""
         self.stop_consuming()
@@ -80,7 +121,8 @@ class RabbitMQClient:
     def publish(self, routing_key: str, message: dict) -> None:
         """Publish message to exchange"""
         try:
-            self.channel.basic_publish(
+            channel = self._ensure_publisher_channel()
+            channel.basic_publish(
                 exchange=RABBITMQ_EXCHANGE,
                 routing_key=routing_key,
                 body=json.dumps(message),
@@ -105,6 +147,7 @@ class RabbitMQClient:
             exchange=RABBITMQ_EXCHANGE, queue=queue_name, routing_key=routing_key
         )
         channel.basic_consume(queue=queue_name, on_message_callback=callback)
+        self._declared_queues.add(queue_name)
         logger.info(f"Subscribed {queue_name} -> {routing_key}")
 
     def connect_consumer(self) -> None:

@@ -39,9 +39,11 @@ from src.shared.infrastructure.messaging.event_consumer import EventConsumer
 from src.shared.constants import (
     QUEUE_GATEWAY_PLAYER_EVENTS,
     QUEUE_GATEWAY_ROUND_RESULTS,
+    QUEUE_WORKER_CALCULATE_RESULTS,
     ROUND_DURATION_SECONDS,
     ROUTING_KEY_PLAYER_JOINED,
     ROUTING_KEY_PLAYER_SUBMIT,
+    ROUTING_KEY_ROUND_CALCULATE,
     ROUTING_KEY_ROUND_RESULT_FAILED,
     ROUTING_KEY_ROUND_RESULT_READY,
     RoundStatus,
@@ -82,6 +84,12 @@ class GameApplication:
 
             # Setup broker subscriptions
             await self._setup_event_consumer()
+
+            # Buffer calculate requests even when the worker service is down so
+            # they are replayed instead of dropped.
+            message_publisher.ensure_queue(
+                QUEUE_WORKER_CALCULATE_RESULTS, [ROUTING_KEY_ROUND_CALCULATE]
+            )
 
             logger.info("Application initialized successfully")
             self.initialized = True
@@ -456,10 +464,19 @@ app_instance = GameApplication()
 # HTTP endpoints
 async def health(request):
     """Health check endpoint"""
+    worker_queue = rabbitmq_client.queue_status(QUEUE_WORKER_CALCULATE_RESULTS)
+    worker_consumers = worker_queue.get("consumers") or 0
     return JSONResponse(
         {
             "status": "ok",
             "broker": "connected" if rabbitmq_client.consumer_alive else "disconnected",
+            "worker": {
+                "queue": worker_queue.get("queue"),
+                "consumers": worker_queue.get("consumers"),
+                "pending_messages": worker_queue.get("messages"),
+                "alive": worker_consumers > 0,
+                "error": worker_queue.get("error"),
+            },
         }
     )
 

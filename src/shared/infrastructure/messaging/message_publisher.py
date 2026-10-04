@@ -34,8 +34,10 @@ class MessagePublisher:
 
     def publish_player_joined(self, event_data: Dict[str, Any]) -> bool:
         """Publish player joined event"""
-        from src.shared.constants import ROUTING_KEY_PLAYER_JOINED
+        from src.shared.constants import ROUTING_KEY_PLAYER_JOINED, QUEUE_GATEWAY_PLAYER_EVENTS
         from src.shared.domain.events import PlayerJoinedEvent
+
+        self.ensure_queue(QUEUE_GATEWAY_PLAYER_EVENTS, [ROUTING_KEY_PLAYER_JOINED])
 
         return self.publish_event(
             ROUTING_KEY_PLAYER_JOINED, PlayerJoinedEvent(payload=event_data)
@@ -43,17 +45,36 @@ class MessagePublisher:
 
     def publish_player_guess(self, event_data: Dict[str, Any]) -> bool:
         """Publish player guess event"""
-        from src.shared.constants import ROUTING_KEY_PLAYER_SUBMIT
+        from src.shared.constants import ROUTING_KEY_PLAYER_SUBMIT, QUEUE_GATEWAY_PLAYER_EVENTS
         from src.shared.domain.events import PlayerSubmitGuessEvent
+
+        self.ensure_queue(QUEUE_GATEWAY_PLAYER_EVENTS, [ROUTING_KEY_PLAYER_SUBMIT])
 
         return self.publish_event(
             ROUTING_KEY_PLAYER_SUBMIT, PlayerSubmitGuessEvent(payload=event_data)
         )
 
+    def ensure_queue(self, queue_name: str, routing_keys) -> None:
+        """Make sure a queue exists and is bound before publishing to it.
+
+        Without this, publishing to a routing key that has no bound queue is
+        silently discarded by the broker and the request appears to hang.
+        """
+        try:
+            if queue_name not in self.broker._declared_queues:
+                self.broker.declare_queue(queue_name, routing_keys)
+        except Exception as e:
+            logger.error(f"Failed to declare queue {queue_name}: {e}")
+
     def publish_calculate_result(self, event_data: Dict[str, Any]) -> bool:
         """Publish calculate result request event"""
-        from src.shared.constants import ROUTING_KEY_ROUND_CALCULATE
+        from src.shared.constants import (
+            ROUTING_KEY_ROUND_CALCULATE,
+            QUEUE_WORKER_CALCULATE_RESULTS,
+        )
         from src.shared.domain.events import CalculateRoundResultEvent
+
+        self.ensure_queue(QUEUE_WORKER_CALCULATE_RESULTS, [ROUTING_KEY_ROUND_CALCULATE])
 
         return self.publish_event(
             ROUTING_KEY_ROUND_CALCULATE, CalculateRoundResultEvent(payload=event_data)
@@ -61,8 +82,13 @@ class MessagePublisher:
 
     def publish_round_result_ready(self, event_data: Dict[str, Any]) -> bool:
         """Publish round result ready event"""
-        from src.shared.constants import ROUTING_KEY_ROUND_RESULT_READY
+        from src.shared.constants import (
+            ROUTING_KEY_ROUND_RESULT_READY,
+            QUEUE_GATEWAY_ROUND_RESULTS,
+        )
         from src.shared.domain.events import RoundResultReadyEvent
+
+        self.ensure_queue(QUEUE_GATEWAY_ROUND_RESULTS, [ROUTING_KEY_ROUND_RESULT_READY])
 
         return self.publish_event(
             ROUTING_KEY_ROUND_RESULT_READY, RoundResultReadyEvent(payload=event_data)
@@ -70,8 +96,16 @@ class MessagePublisher:
 
     def publish_round_result_failed(self, event_data: Dict[str, Any]) -> bool:
         """Publish round result failure event"""
-        from src.shared.constants import ROUTING_KEY_ROUND_RESULT_FAILED
+        from src.shared.constants import (
+            ROUTING_KEY_ROUND_RESULT_FAILED,
+            QUEUE_GATEWAY_ROUND_RESULTS,
+        )
         from src.shared.domain.events import RoundResultFailedEvent
+
+        self.ensure_queue(
+            QUEUE_GATEWAY_ROUND_RESULTS,
+            [ROUTING_KEY_ROUND_RESULT_READY, ROUTING_KEY_ROUND_RESULT_FAILED],
+        )
 
         return self.publish_event(
             ROUTING_KEY_ROUND_RESULT_FAILED, RoundResultFailedEvent(payload=event_data)
