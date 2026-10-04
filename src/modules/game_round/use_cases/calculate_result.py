@@ -23,13 +23,14 @@ class CalculateResultUseCase:
         self.guess_repo = guess_repository
         self.result_repo = result_repository
 
-    async def execute(self, room_id: str, round_id: int) -> dict:
+    async def execute(self, room_id: str, round_id: int, force_calculate: bool = False) -> dict:
         """
         Execute calculate result logic
         
         Args:
             room_id: Room identifier
             round_id: Round number
+            force_calculate: True if Skip button (partial data), False if all submitted
             
         Returns:
             dict with calculation result
@@ -66,17 +67,19 @@ class CalculateResultUseCase:
                 average=round(average, 2),
                 target=round(target, 2),
                 winner=winner,
+                force_calculate=force_calculate,  # Track how result was calculated
             )
 
             # Save result
             await self.result_repo.save(room_id, round_id, result)
 
-            logger.info(f"Round {round_id} result calculated: {result.to_dict()}")
+            logger.info(f"Round {round_id} result calculated (force={force_calculate}): {result.to_dict()}")
 
             return {
                 "success": True,
                 "result": result.to_dict(),
                 "message": f"Round {round_id} completed",
+                "calculation_type": "skipped" if force_calculate else "normal",
             }
 
         except Exception as e:

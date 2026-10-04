@@ -221,10 +221,7 @@ class GameApplication:
                 round_id = data.get("round_id")
                 
                 # Calculate result synchronously
-                result = await self.round_controller.calculate_result({
-                    "room_id": room_id,
-                    "round_id": round_id,
-                })
+                result = await self.round_controller.calculate_result(data)
 
                 if result.get("success"):
                     # Broadcast result to room

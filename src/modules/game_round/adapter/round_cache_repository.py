@@ -1,6 +1,7 @@
 """
 Round repository implementation - Redis adapter
 """
+import json
 import logging
 from typing import Optional, List
 from src.modules.game_round.domain.round_repository import (
@@ -27,7 +28,8 @@ class GuessCacheRepository(IGuessRepository):
         """Save guess to Redis hash"""
         try:
             key = self._get_key(room_id, round_id)
-            await self.cache.hset(key, {guess.player_id: guess.to_dict()})
+            # hset stores one field with JSON value
+            await self.cache.hset(key, mapping={guess.player_id: json.dumps(guess.to_dict())})
             logger.debug(f"Guess saved for player {guess.player_id} in round {round_id}")
         except Exception as e:
             logger.error(f"Failed to save guess: {e}")

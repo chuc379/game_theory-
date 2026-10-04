@@ -82,6 +82,7 @@ class RoundResult:
     average: float
     target: float
     winner: Winner
+    force_calculate: bool = False
     calculated_at: float = None
 
     def __post_init__(self):
@@ -94,6 +95,7 @@ class RoundResult:
             "average": self.average,
             "target": self.target,
             "winner": self.winner.to_dict(),
+            "force_calculate": self.force_calculate,
             "calculated_at": self.calculated_at,
         }
 

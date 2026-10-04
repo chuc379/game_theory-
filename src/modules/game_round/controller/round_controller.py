@@ -40,6 +40,11 @@ def validate_calculate_result(data: Dict[str, Any]) -> tuple[bool, str]:
     return True, ""
 
 
+def get_force_calculate(data: Dict[str, Any]) -> bool:
+    """Get force_calculate flag (Skip button when not all submitted)"""
+    return data.get("force_calculate", False)
+
+
 class RoundController:
     """Round controller - Handles round operations"""
 
@@ -73,9 +78,12 @@ class RoundController:
             if not valid:
                 return {"success": False, "error": error}
             
+            force_calculate = get_force_calculate(request)
+            
             result = await self.calculate_result_use_case.execute(
                 room_id=request.get("room_id"),
                 round_id=int(request.get("round_id")),
+                force_calculate=force_calculate,
             )
             return result
         except Exception as e:
