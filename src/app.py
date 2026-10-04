@@ -224,46 +224,66 @@ class GameApplication:
                 result = await self.player_controller.join_room(request)
 
                 if result.get("success"):
-                    await socket_gateway.sio.enter_room(sid, f"room_{room_id}")
+                    # Room membership is critical: without it this client receives
+                    # no round_started / round_result broadcasts.
+                    await socket_gateway.enter_room(sid, f"room_{room_id}")
 
-                    if is_mc:
-                        # MC creating/joining - save room info
-                        await self.room_controller.save_room_info(room_id, {
-                            "room_id": room_id,
-                            "created_at": datetime.now().isoformat(),
-                            "player_count": 1,
-                            "mc_name": data.get("player_name"),
-                        })
-                    else:
-                        # Player joining - announce through the broker
-                        message_publisher.publish_player_joined(
-                            {
+                    try:
+                        if is_mc:
+                            # MC creating/joining - save room info
+                            await self.room_controller.save_room_info(room_id, {
                                 "room_id": room_id,
-                                "player": result.get("player"),
-                            }
-                        )
-
-                        # Late joiner: replay the current round state so the
-                        # player UI does not wait for the next round.
-                        current_round = await self.room_controller.get_current_round(room_id)
-                        round_status = await self.room_controller.get_round_status(room_id)
-                        if current_round > 0 and round_status == RoundStatus.LOCKED:
-                            await socket_gateway.emit_async(
-                                "round_started",
+                                "created_at": datetime.now().isoformat(),
+                                "player_count": 1,
+                                "mc_name": data.get("player_name"),
+                            })
+                        else:
+                            # Player joining - announce through the broker
+                            message_publisher.publish_player_joined(
                                 {
                                     "room_id": room_id,
-                                    "round_id": current_round,
-                                    "duration": ROUND_DURATION_SECONDS,
-                                },
-                                to=sid,
+                                    "player": result.get("player"),
+                                }
                             )
-                            logger.info(
-                                f"Replayed round {current_round} to late joiner {sid}"
-                            )
+
+                            # Late joiner: replay the current round state so the
+                            # player UI does not wait for the next round.
+                            current_round = await self.room_controller.get_current_round(room_id)
+                            round_status = await self.room_controller.get_round_status(room_id)
+                            if current_round > 0 and round_status == RoundStatus.LOCKED:
+                                await socket_gateway.emit_async(
+                                    "round_started",
+                                    {
+                                        "room_id": room_id,
+                                        "round_id": current_round,
+                                        "duration": ROUND_DURATION_SECONDS,
+                                    },
+                                    to=sid,
+                                )
+                                logger.info(
+                                    f"Replayed round {current_round} to late joiner {sid}"
+                                )
+                    except Exception as setup_error:
+                        # Side effects are best-effort: never block the join
+                        # acknowledgement, but tell the client about it.
+                        logger.error(
+                            f"Post-join setup failed for room {room_id}: {setup_error}",
+                            exc_info=True,
+                        )
+                        await socket_gateway.emit_async(
+                            "warning",
+                            {
+                                "message": (
+                                    f"Joined room {room_id} but some setup failed: "
+                                    f"{setup_error}"
+                                )
+                            },
+                            to=sid,
+                        )
 
                 await socket_gateway.emit_async("join_room_response", result, to=sid)
             except Exception as e:
-                logger.error(f"Error in join_room: {e}")
+                logger.error(f"Error in join_room: {e}", exc_info=True)
                 await socket_gateway.emit_async("error", {"error": str(e)}, to=sid)
 
         @socket_gateway.sio.on("submit_guess")

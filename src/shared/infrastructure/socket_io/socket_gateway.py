@@ -1,6 +1,7 @@
 """
 Socket.io gateway - Real-time communication adapter (ASGI)
 """
+import inspect
 import logging
 from typing import Callable, Optional, Dict, Any
 from socketio import AsyncServer
@@ -56,6 +57,22 @@ class SocketGateway:
     ) -> None:
         """Emit event asynchronously"""
         await self.sio.emit(event, data, to=to, skip_sid=skip_sid, namespace=namespace)
+
+    async def enter_room(self, sid: str, room: str, namespace: Optional[str] = None) -> None:
+        """Add a client to a room.
+
+        ``enter_room`` is a plain method up to python-socketio 5.9.x and became
+        a coroutine in 5.10, so the result is only awaited when awaitable.
+        """
+        result = self.sio.enter_room(sid, room, namespace=namespace)
+        if inspect.isawaitable(result):
+            await result
+
+    async def leave_room(self, sid: str, room: str, namespace: Optional[str] = None) -> None:
+        """Remove a client from a room"""
+        result = self.sio.leave_room(sid, room, namespace=namespace)
+        if inspect.isawaitable(result):
+            await result
 
     async def emit_to_room(
         self,
