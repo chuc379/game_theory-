@@ -182,10 +182,21 @@ class RabbitMQClient:
         if connection is None:
             return
 
+        self._consumer_connection = None
+        self._consumer_thread = None
+
+        if connection.is_closed:
+            return
+
         try:
-            connection.add_callback_threadsafe(connection.stop_ioloop)
+            ioloop = connection._impl.ioloop
+            connection.add_callback_threadsafe(ioloop.stop)
         except Exception as e:
-            logger.warning(f"Failed to stop consumer cleanly: {e}")
+            logger.warning(f"Falling back to closing the consumer connection: {e}")
+            try:
+                connection.close()
+            except Exception as close_error:
+                logger.warning(f"Failed to close consumer connection: {close_error}")
 
     @property
     def consumer_alive(self) -> bool:

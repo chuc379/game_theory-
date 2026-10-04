@@ -59,7 +59,8 @@ class EventConsumer:
         if self._loop is None:
             self._loop = asyncio.get_running_loop()
 
-        await asyncio.to_thread(self.broker.connect_consumer)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self.broker.connect_consumer)
 
         for queue_name, routing_key, handler in self._subscriptions:
             self.broker.add_consumer(
