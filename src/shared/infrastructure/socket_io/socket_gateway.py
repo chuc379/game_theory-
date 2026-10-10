@@ -3,10 +3,25 @@ Socket.io gateway - Real-time communication adapter (ASGI)
 """
 import inspect
 import logging
+import os
 from typing import Callable, Optional, Dict, Any
 from socketio import AsyncServer
 
 logger = logging.getLogger(__name__)
+
+
+def _cors_allowed_origins():
+    """
+    Origins allowed to open a Socket.IO connection.
+
+    python-socketio matches origins by exact string comparison, so globs such as
+    "https://*" never match and silently reject every real origin. Use the special
+    value "*" to allow all, or a comma separated list via CORS_ALLOWED_ORIGINS.
+    """
+    raw = os.getenv("CORS_ALLOWED_ORIGINS", "*").strip()
+    if raw == "*":
+        return "*"
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 
 class SocketGateway:
@@ -15,18 +30,7 @@ class SocketGateway:
     def __init__(self):
         self.sio = AsyncServer(
             async_mode="asgi",
-            cors_allowed_origins=[
-                "http://localhost:2000",
-                "http://localhost:2500",
-                "http://localhost:3000",
-                "http://localhost:3001",
-                "http://localhost:5000",
-                "http://127.0.0.1:2000",
-                "http://127.0.0.1:2500",
-                "http://127.0.0.1:3000",
-                "http://127.0.0.1:5000",
-                "https://*",
-            ],
+            cors_allowed_origins=_cors_allowed_origins(),
             ping_timeout=60,
             ping_interval=25,
             engineio_logger=False,
