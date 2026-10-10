@@ -7,10 +7,26 @@ services:
     buildCommand: cd BE && pip install -r requirements.txt
     startCommand: cd BE && python src/app.py
     envVars:
+      # Secrets are NOT stored in git. `sync: false` makes Render prompt for the
+      # value in the dashboard and keep it out of this file.
       - key: REDIS_URL
-        value: rediss://default:gQAAAAAABJrbAAIgcDFjMDIzOGY3NzY0NmM0NDFjYTZmMDEzOTQ1MTc3ZjYxMg@patient-chimp-301787.upstash.io:6379
+        sync: false
       - key: RABBITMQ_URL
-        value: amqps://xyivdmmf:1Wnz0qNO8jszbTcPjjSrRXO0GH-APuUY@kingfisher.lmq.cloudamqp.com/xyivdmmf
+        sync: false
+      # Render generates a strong random signing key for MC JWTs.
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRE_MINUTES
+        value: "720"
+      # Single MC account. Generate the hash with:
+      #   python -m src.modules.auth.hash_cli "your-password"
+      - key: MC_USERNAME
+        sync: false
+      - key: MC_PASSWORD_HASH
+        sync: false
+      # Comma separated allowlist, or "*" to allow every origin.
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
       - key: ENV
         value: production
       - key: DEBUG
@@ -31,9 +47,9 @@ services:
     startCommand: cd BE && python -m src.worker.game_worker
     envVars:
       - key: REDIS_URL
-        value: rediss://default:gQAAAAAABJrbAAIgcDFjMDIzOGY3NzY0NmM0NDFjYTZmMDEzOTQ1MTc3ZjYxMg@patient-chimp-301787.upstash.io:6379
+        sync: false
       - key: RABBITMQ_URL
-        value: amqps://xyivdmmf:1Wnz0qNO8jszbTcPjjSrRXO0GH-APuUY@kingfisher.lmq.cloudamqp.com/xyivdmmf
+        sync: false
       - key: ENV
         value: production
       - key: DEBUG

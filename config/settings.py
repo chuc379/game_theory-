@@ -27,6 +27,13 @@ class Settings:
         self.ENV = os.getenv("ENV", "development")
         self.DEBUG = os.getenv("DEBUG", "true").lower() == "true"
 
+        # Auth (MC only; players stay anonymous)
+        self.JWT_SECRET = os.getenv("JWT_SECRET", "")
+        self.JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+        self.JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", 720))
+        self.MC_USERNAME = os.getenv("MC_USERNAME", "")
+        self.MC_PASSWORD_HASH = os.getenv("MC_PASSWORD_HASH", "")
+
         # Parse URLs if provided
         if self.REDIS_URL:
             self._parse_redis_url()

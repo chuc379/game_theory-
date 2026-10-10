@@ -3,17 +3,23 @@ Main application entry point - Socket.io gateway server (Starlette)
 """
 import logging
 import os
-from datetime import datetime
 from contextlib import asynccontextmanager
 from socketio import ASGIApp
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.middleware.cors import CORSMiddleware
+from socketio.exceptions import ConnectionRefusedError
+from starlette.requests import Request
 from config.settings import settings
 from src.shared.infrastructure.socket_io.socket_gateway import socket_gateway
 from src.shared.infrastructure.cache.redis_client import redis_client
 from src.shared.infrastructure.messaging.rabbitmq_client import rabbitmq_client
+
+# Authentication (MC login)
+from src.modules.auth.service import auth_service
+from src.modules.auth.tokens import verify_access_token
+from src.modules.auth.session_registry import session_registry
 
 # Initialize repositories
 from src.modules.player.adapter.player_cache_repository import PlayerCacheRepository
@@ -188,6 +194,19 @@ class GameApplication:
         )
         logger.info(f"Broadcast round {round_id} result for room {room_id}")
 
+    async def _require_room_owner(self, sid: str, room_id: str) -> bool:
+        """True when this socket is an authenticated MC that owns the room."""
+        if not session_registry.is_mc(sid):
+            logger.warning(f"Socket {sid} is not an authenticated MC")
+            return False
+        username = session_registry.mc_username(sid)
+        owned = await self.room_controller.is_room_owner(room_id, username)
+        if not owned:
+            logger.warning(
+                f"MC '{username}' does not own room {room_id}"
+            )
+        return owned
+
     async def _calculate_inline(
         self, room_id: str, round_id: int, force_calculate: bool
     ) -> dict:
@@ -242,21 +261,40 @@ class GameApplication:
         """Setup Socket.io event handlers"""
 
         @socket_gateway.sio.on("connect")
-        async def on_connect(sid, environ):
-            logger.info(f"Client connected: {sid}")
-            await socket_gateway.emit_async("connection_response", {"data": "Connected"}, to=sid)
+        async def on_connect(sid, environ, auth=None):
+            """Players connect anonymously; an MC must present a valid JWT.
+
+            The token is sent by the client in the Socket.IO handshake auth
+            payload: io(url, { auth: { token } }).
+            """
+            token = auth.get("token") if isinstance(auth, dict) else None
+            if token:
+                username = verify_access_token(token)
+                if not username:
+                    logger.warning(f"Socket {sid} presented an invalid or expired token")
+                    raise ConnectionRefusedError("invalid_token")
+                session_registry.bind_mc(sid, username)
+
+            role = "mc" if session_registry.is_mc(sid) else "player"
+            logger.info(f"Client connected: {sid} (role={role})")
+            await socket_gateway.emit_async(
+                "connection_response", {"data": "Connected", "role": role}, to=sid
+            )
 
         @socket_gateway.sio.on("disconnect")
         async def on_disconnect(sid):
             logger.info(f"Client disconnected: {sid}")
+            session_registry.remove(sid)
 
         @socket_gateway.sio.on("join_room")
         async def on_join_room(sid, data):
             logger.info(f"Join room event from {sid}: {data}")
             try:
                 room_id = data.get("room_id")
-                is_mc = data.get("is_mc", False)
-                
+                # The MC role is decided by the server (JWT session), never by
+                # a client-supplied flag such as data["is_mc"].
+                is_mc = session_registry.is_mc(sid)
+
                 request = {
                     "room_id": room_id,
                     "player_name": data.get("player_name"),
@@ -272,14 +310,23 @@ class GameApplication:
 
                     try:
                         if is_mc:
-                            # MC creating/joining - save room info
-                            await self.room_controller.save_room_info(room_id, {
-                                "room_id": room_id,
-                                "created_at": datetime.now().isoformat(),
-                                "player_count": 1,
-                                "mc_name": data.get("player_name"),
-                            })
+                            claim = await self.room_controller.claim_room(
+                                room_id,
+                                session_registry.mc_username(sid),
+                                data.get("player_name"),
+                            )
+                            if not claim.get("success"):
+                                await socket_gateway.emit_async(
+                                    "error", {"error": claim.get("error")}, to=sid
+                                )
+                                return
                         else:
+                            # Bind this socket to the player identity so that
+                            # submit_guess cannot impersonate another player.
+                            session_registry.bind_player(
+                                sid, result.get("player", {}).get("player_id"), room_id
+                            )
+
                             # Player joining - announce through the broker
                             message_publisher.publish_player_joined(
                                 {
@@ -332,6 +379,19 @@ class GameApplication:
         async def on_submit_guess(sid, data):
             logger.info(f"Submit guess event from {sid}: {data}")
             try:
+                # Never trust a client-supplied player_id: use the identity bound
+                # to this socket when it joined the room.
+                if not session_registry.is_mc(sid):
+                    bound_player_id = session_registry.player_id(sid)
+                    if not bound_player_id:
+                        await socket_gateway.emit_async(
+                            "error",
+                            {"error": "Join a room before submitting a guess"},
+                            to=sid,
+                        )
+                        return
+                    data = {**data, "player_id": bound_player_id}
+
                 # Validate request
                 from src.modules.game_round.controller.round_controller import validate_submit_guess
                 valid, error = validate_submit_guess(data)
@@ -379,6 +439,15 @@ class GameApplication:
 
                 room_id = data.get("room_id")
                 round_id = data.get("round_id")
+
+                # Only the MC that owns the room may end the round.
+                if not await self._require_room_owner(sid, room_id):
+                    await socket_gateway.emit_async(
+                        "error",
+                        {"error": "Only the MC that owns this room can calculate results"},
+                        to=sid,
+                    )
+                    return
 
                 valid, error = await self.round_controller.validate_round(
                     room_id, round_id
@@ -473,6 +542,15 @@ class GameApplication:
                     )
                     return
 
+                # Only the MC that owns the room may start a round.
+                if not await self._require_room_owner(sid, room_id):
+                    await socket_gateway.emit_async(
+                        "error",
+                        {"error": "Only the MC that owns this room can start a round"},
+                        to=sid,
+                    )
+                    return
+
                 round_id = await self.room_controller.start_round(room_id)
                 logger.info(f"Room {room_id} started round {round_id}")
 
@@ -511,8 +589,18 @@ class GameApplication:
         async def on_list_rooms(sid, data):
             logger.info(f"List rooms request from {sid}")
             try:
-                # Get all active rooms from Redis
-                rooms = await self.room_controller.list_rooms()
+                if not session_registry.is_mc(sid):
+                    await socket_gateway.emit_async(
+                        "error",
+                        {"error": "Only the MC can list rooms"},
+                        to=sid,
+                    )
+                    return
+
+                # An MC only ever sees the rooms it owns.
+                rooms = await self.room_controller.list_rooms_for_mc(
+                    session_registry.mc_username(sid)
+                )
                 await socket_gateway.emit_async(
                     "rooms_list",
                     {"success": True, "rooms": rooms},
@@ -564,11 +652,40 @@ async def lifespan(app):
         await app_instance.shutdown()
 
 
+async def login(request: Request):
+    """Exchange MC credentials for a JWT access token."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"success": False, "error": "Invalid JSON body"}, status_code=400
+        )
+
+    username = body.get("username") or ""
+    password = body.get("password") or ""
+    token = auth_service.authenticate(username, password)
+    if not token:
+        return JSONResponse(
+            {"success": False, "error": "Invalid username or password"},
+            status_code=401,
+        )
+
+    return JSONResponse(
+        {
+            "success": True,
+            "token": token,
+            "token_type": "bearer",
+            "expires_in": settings.JWT_EXPIRE_MINUTES * 60,
+        }
+    )
+
+
 # Starlette app
 starlette_app = Starlette(
     debug=settings.DEBUG,
     routes=[
         Route("/health", health),
+        Route("/auth/login", login, methods=["POST"]),
     ],
     lifespan=lifespan,
 )
