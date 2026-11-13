@@ -17,7 +17,7 @@ ROUND_DURATION_SECONDS = 30
 # Survival mode
 # Every player starts with this many lives. A wrong guess costs one life and a
 # player with zero lives is eliminated from the game.
-STARTING_LIVES = 5
+STARTING_LIVES = 10
 # A round is considered "converged" when the target (2/3 of the average) is this
 # close to 0. In that case every player who picked 0 loses a life instead of the
 # usual "wrong guess" penalty.

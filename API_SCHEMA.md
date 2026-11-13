@@ -58,7 +58,7 @@
   "room_id": "CLB30",
   "current_round": 2,
   "round_status": "LOCKED",
-  "started_lives": 5,
+  "started_lives": 10,
   "players": [
     {
       "player_id": "usr_abc123",
@@ -66,7 +66,7 @@
       "socket_id": "socket_12345",
       "is_online": true,
       "submitted": true,
-      "points": 4,
+      "points": 8,
       "eliminated": false,
       "rounds_played": 2,
       "wins": 0,
@@ -77,8 +77,8 @@
     {
       "player_id": "usr_abc123",
       "player_name": "Nguyễn Văn A",
-      "points": 4,
-      "total_points": 4,
+      "points": 8,
+      "total_points": 8,
       "eliminated": false,
       "last_delta": -1,
       "rank": 1
@@ -208,7 +208,7 @@
 
 ### Survival Scoring Rules
 
-- Every player starts with `STARTING_LIVES = 5`.
+- Every player starts with `STARTING_LIVES = 10`.
 - Normal round: everyone whose guess is not the winning guess loses 1 life.
   Players that did not submit count as wrong.
 - Converged round (`target <= 0.01`): every player who picked `0` loses 1 life;
