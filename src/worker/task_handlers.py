@@ -6,7 +6,9 @@ from src.modules.game_round.adapter.round_cache_repository import (
     GuessCacheRepository,
     RoundResultCacheRepository,
 )
+from src.modules.game_round.adapter.score_cache_repository import ScoreCacheRepository
 from src.modules.game_round.use_cases.calculate_result import CalculateResultUseCase
+from src.modules.player.adapter.player_cache_repository import PlayerCacheRepository
 from src.shared.infrastructure.messaging.message_publisher import message_publisher
 
 logger = logging.getLogger(__name__)
@@ -16,9 +18,16 @@ class TaskHandler:
     """Handle tasks from RabbitMQ"""
 
     def __init__(self):
+        self.player_repo = PlayerCacheRepository()
         self.guess_repo = GuessCacheRepository()
         self.result_repo = RoundResultCacheRepository()
-        self.calculate_use_case = CalculateResultUseCase(self.guess_repo, self.result_repo)
+        self.score_repo = ScoreCacheRepository()
+        self.calculate_use_case = CalculateResultUseCase(
+            self.guess_repo,
+            self.result_repo,
+            self.score_repo,
+            self.player_repo,
+        )
 
     async def handle_calculate_result(self, event_data: dict) -> None:
         """

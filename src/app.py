@@ -27,7 +27,9 @@ from src.modules.game_round.adapter.round_cache_repository import (
     GuessCacheRepository,
     RoundResultCacheRepository,
 )
+from src.modules.game_round.adapter.score_cache_repository import ScoreCacheRepository
 from src.modules.room.adapter.room_cache_repository import RoomCacheRepository
+from src.shared.domain.scoring import RoomScoreboard
 
 # Initialize use cases
 from src.modules.player.use_cases.join_room import JoinRoomUseCase
@@ -43,15 +45,13 @@ from src.modules.room.controller.room_controller import RoomController
 from src.shared.infrastructure.messaging.message_publisher import message_publisher
 from src.shared.infrastructure.messaging.event_consumer import EventConsumer
 from src.shared.constants import (
-    QUEUE_GATEWAY_PLAYER_EVENTS,
     QUEUE_GATEWAY_ROUND_RESULTS,
     QUEUE_WORKER_CALCULATE_RESULTS,
     ROUND_DURATION_SECONDS,
-    ROUTING_KEY_PLAYER_JOINED,
-    ROUTING_KEY_PLAYER_SUBMIT,
     ROUTING_KEY_ROUND_CALCULATE,
     ROUTING_KEY_ROUND_RESULT_FAILED,
     ROUTING_KEY_ROUND_RESULT_READY,
+    STARTING_LIVES,
     RoundStatus,
 )
 
@@ -65,6 +65,10 @@ class GameApplication:
         self.player_controller = None
         self.round_controller = None
         self.room_controller = None
+        self.player_repo = None
+        self.guess_repo = None
+        self.result_repo = None
+        self.score_repo = None
         self.event_consumer = None
         self.initialized = False
 
@@ -106,8 +110,8 @@ class GameApplication:
     def _setup_controllers(self) -> None:
         """Setup controllers"""
         # Player
-        player_repo = PlayerCacheRepository()
-        join_room_use_case = JoinRoomUseCase(player_repo)
+        self.player_repo = PlayerCacheRepository()
+        join_room_use_case = JoinRoomUseCase(self.player_repo)
         self.player_controller = PlayerController(join_room_use_case)
 
         # Room
@@ -115,10 +119,16 @@ class GameApplication:
         self.room_controller = RoomController(room_repo)
 
         # Game Round
-        guess_repo = GuessCacheRepository()
-        result_repo = RoundResultCacheRepository()
-        submit_guess_use_case = SubmitGuessUseCase(guess_repo)
-        calculate_result_use_case = CalculateResultUseCase(guess_repo, result_repo)
+        self.guess_repo = GuessCacheRepository()
+        self.result_repo = RoundResultCacheRepository()
+        self.score_repo = ScoreCacheRepository()
+        submit_guess_use_case = SubmitGuessUseCase(self.guess_repo)
+        calculate_result_use_case = CalculateResultUseCase(
+            self.guess_repo,
+            self.result_repo,
+            self.score_repo,
+            self.player_repo,
+        )
         self.round_controller = RoundController(
             submit_guess_use_case, calculate_result_use_case, room_repo
         )
@@ -127,16 +137,6 @@ class GameApplication:
         """Subscribe the gateway to the events it owns"""
         self.event_consumer = EventConsumer()
 
-        self.event_consumer.subscribe(
-            QUEUE_GATEWAY_PLAYER_EVENTS,
-            ROUTING_KEY_PLAYER_JOINED,
-            self.on_player_joined_event,
-        )
-        self.event_consumer.subscribe(
-            QUEUE_GATEWAY_PLAYER_EVENTS,
-            ROUTING_KEY_PLAYER_SUBMIT,
-            self.on_player_submit_event,
-        )
         self.event_consumer.subscribe(
             QUEUE_GATEWAY_ROUND_RESULTS,
             ROUTING_KEY_ROUND_RESULT_READY,
@@ -150,29 +150,81 @@ class GameApplication:
 
         await self.event_consumer.start()
 
-    async def on_player_joined_event(self, event: dict) -> None:
-        """Handle player joined event coming from the broker"""
-        room_id = event.get("room_id")
-        player = event.get("player")
-        if not room_id or not player:
-            logger.error(f"Malformed player joined event: {event}")
-            return
+    async def _build_room_state(self, room_id: str) -> dict:
+        """Authoritative snapshot of a room: players, lives and submissions.
 
-        await self.room_controller.update_player_count(room_id)
-        await socket_gateway.emit_async(
-            "player_joined", player, to=f"room_{room_id}"
-        )
+        Both the MC and the players use this instead of trying to reconstruct
+        game state from individual events, which is what made the MC list stale.
+        """
+        players = await self.player_repo.find_all_by_room(room_id)
+        scores = await self.score_repo.ensure_players(room_id, players)
+        score_map = {score.player_id: score for score in scores}
 
-    async def on_player_submit_event(self, event: dict) -> None:
-        """Handle player submitted event coming from the broker"""
-        room_id = event.get("room_id")
-        if not room_id:
-            logger.error(f"Malformed player submit event: {event}")
-            return
+        current_round = await self.room_controller.get_current_round(room_id)
+        round_status = await self.room_controller.get_round_status(room_id)
 
-        await socket_gateway.emit_async(
-            "player_submitted", event.get("guess"), to=f"room_{room_id}"
-        )
+        submitted_ids = set()
+        if current_round > 0:
+            guesses = await self.guess_repo.find_all(room_id, current_round)
+            submitted_ids = {guess.player_id for guess in guesses}
+
+        player_entries = []
+        for player in players:
+            score = score_map.get(player.player_id)
+            player_entries.append(
+                {
+                    "player_id": player.player_id,
+                    "player_name": player.name,
+                    "socket_id": player.socket_id,
+                    "is_online": player.is_online,
+                    "submitted": player.player_id in submitted_ids,
+                    "points": score.total_points if score else STARTING_LIVES,
+                    "eliminated": score.eliminated if score else False,
+                    "rounds_played": score.rounds_played if score else 0,
+                    "wins": score.wins if score else 0,
+                    "last_delta": score.last_delta if score else 0,
+                }
+            )
+
+        scoreboard = RoomScoreboard(
+            room_id=room_id,
+            players=list(score_map.values()),
+        ).get_ranking()
+
+        return {
+            "room_id": room_id,
+            "current_round": current_round,
+            "round_status": round_status,
+            "players": player_entries,
+            "scoreboard": scoreboard,
+            "started_lives": STARTING_LIVES,
+        }
+
+    async def _broadcast_room_state(self, room_id: str, skip_sid: str = None) -> dict:
+        """Push the authoritative room state to every client in the room"""
+        try:
+            state = await self._build_room_state(room_id)
+            await socket_gateway.emit_async(
+                "room_state",
+                state,
+                to=f"room_{room_id}",
+                skip_sid=skip_sid,
+            )
+            return state
+        except Exception as e:
+            logger.error(f"Failed to broadcast room state for {room_id}: {e}", exc_info=True)
+            return {}
+
+    async def _refresh_player_count(self, room_id: str) -> None:
+        """Store the real number of players on the room record"""
+        try:
+            players = await self.player_repo.find_all_by_room(room_id)
+            info = await self.room_controller.room_repo.find_info(room_id) or {}
+            info["room_id"] = room_id
+            info["player_count"] = len(players)
+            await self.room_controller.room_repo.save_info(room_id, info)
+        except Exception as e:
+            logger.warning(f"Failed to refresh player count for room {room_id}: {e}")
 
     async def on_round_result_ready_event(self, event: dict) -> None:
         """Handle computed round result coming back from the worker"""
@@ -192,6 +244,7 @@ class GameApplication:
             },
             to=f"room_{room_id}",
         )
+        await self._broadcast_room_state(room_id)
         logger.info(f"Broadcast round {round_id} result for room {room_id}")
 
     async def _require_room_owner(self, sid: str, room_id: str) -> bool:
@@ -236,6 +289,7 @@ class GameApplication:
             },
             to=f"room_{room_id}",
         )
+        await self._broadcast_room_state(room_id)
         logger.info(
             f"Broadcast round {round_id} result for room {room_id} (inline)"
         )
@@ -290,68 +344,113 @@ class GameApplication:
         async def on_join_room(sid, data):
             logger.info(f"Join room event from {sid}: {data}")
             try:
-                room_id = data.get("room_id")
+                # Room ids are case-insensitive: players type them by hand while
+                # the MC gets a generated (uppercase) code.
+                room_id = str(data.get("room_id") or "").strip().upper()
+                if not room_id:
+                    await socket_gateway.emit_async(
+                        "join_room_response",
+                        {"success": False, "error": "room_id is required"},
+                        to=sid,
+                    )
+                    return
+
+                player_name = str(data.get("player_name") or "").strip()
+
                 # The MC role is decided by the server (JWT session), never by
                 # a client-supplied flag such as data["is_mc"].
                 is_mc = session_registry.is_mc(sid)
 
-                request = {
-                    "room_id": room_id,
-                    "player_name": data.get("player_name"),
-                    "socket_id": sid,
-                    "player_id": data.get("player_id"),
-                }
-                result = await self.player_controller.join_room(request)
+                if is_mc:
+                    # The MC is not a player: it owns the room and must not
+                    # appear in the player list or lose lives.
+                    claim = await self.room_controller.claim_room(
+                        room_id,
+                        session_registry.mc_username(sid),
+                        player_name or "MC",
+                    )
+                    if not claim.get("success"):
+                        await socket_gateway.emit_async(
+                            "join_room_response",
+                            {"success": False, "error": claim.get("error")},
+                            to=sid,
+                        )
+                        return
 
-                if result.get("success"):
+                    await socket_gateway.enter_room(sid, f"room_{room_id}")
+                    state = await self._build_room_state(room_id)
+                    result = {
+                        "success": True,
+                        "message": f"Room {room_id} ready",
+                        "room_id": room_id,
+                        "player": None,
+                        "room_state": state,
+                    }
+                else:
+                    result = await self.player_controller.join_room(
+                        {
+                            "room_id": room_id,
+                            "player_name": player_name,
+                            "socket_id": sid,
+                            "player_id": data.get("player_id"),
+                        }
+                    )
+
+                    if not result.get("success"):
+                        await socket_gateway.emit_async(
+                            "join_room_response", result, to=sid
+                        )
+                        return
+
+                    player = result.get("player") or {}
+                    player_id = player.get("player_id")
+
                     # Room membership is critical: without it this client receives
                     # no round_started / round_result broadcasts.
                     await socket_gateway.enter_room(sid, f"room_{room_id}")
 
-                    try:
-                        if is_mc:
-                            claim = await self.room_controller.claim_room(
-                                room_id,
-                                session_registry.mc_username(sid),
-                                data.get("player_name"),
-                            )
-                            if not claim.get("success"):
-                                await socket_gateway.emit_async(
-                                    "error", {"error": claim.get("error")}, to=sid
-                                )
-                                return
-                        else:
-                            # Bind this socket to the player identity so that
-                            # submit_guess cannot impersonate another player.
-                            session_registry.bind_player(
-                                sid, result.get("player", {}).get("player_id"), room_id
-                            )
+                    # Bind this socket to the player identity so that
+                    # submit_guess cannot impersonate another player.
+                    session_registry.bind_player(sid, player_id, room_id)
 
-                            # Player joining - announce through the broker
-                            message_publisher.publish_player_joined(
+                    # Create the player's survival lives on first join.
+                    await self.score_repo.ensure_player(
+                        room_id, player_id, player.get("name") or player_name
+                    )
+
+                    # Tell the room immediately. The previous broker round-trip
+                    # meant the MC often missed the very first join.
+                    await socket_gateway.emit_async(
+                        "player_joined",
+                        player,
+                        to=f"room_{room_id}",
+                        skip_sid=sid,
+                    )
+                    await self._refresh_player_count(room_id)
+
+                    try:
+                        state = await self._build_room_state(room_id)
+                        result["room_state"] = state
+                        result["room_id"] = room_id
+
+                        # Late joiner: replay the current round state so the
+                        # player UI does not wait for the next round.
+                        if (
+                            state.get("current_round", 0) > 0
+                            and state.get("round_status") == RoundStatus.LOCKED
+                        ):
+                            await socket_gateway.emit_async(
+                                "round_started",
                                 {
                                     "room_id": room_id,
-                                    "player": result.get("player"),
-                                }
+                                    "round_id": state["current_round"],
+                                    "duration": ROUND_DURATION_SECONDS,
+                                },
+                                to=sid,
                             )
-
-                            # Late joiner: replay the current round state so the
-                            # player UI does not wait for the next round.
-                            current_round = await self.room_controller.get_current_round(room_id)
-                            round_status = await self.room_controller.get_round_status(room_id)
-                            if current_round > 0 and round_status == RoundStatus.LOCKED:
-                                await socket_gateway.emit_async(
-                                    "round_started",
-                                    {
-                                        "room_id": room_id,
-                                        "round_id": current_round,
-                                        "duration": ROUND_DURATION_SECONDS,
-                                    },
-                                    to=sid,
-                                )
-                                logger.info(
-                                    f"Replayed round {current_round} to late joiner {sid}"
-                                )
+                            logger.info(
+                                f"Replayed round {state['current_round']} to late joiner {sid}"
+                            )
                     except Exception as setup_error:
                         # Side effects are best-effort: never block the join
                         # acknowledgement, but tell the client about it.
@@ -371,6 +470,7 @@ class GameApplication:
                         )
 
                 await socket_gateway.emit_async("join_room_response", result, to=sid)
+                await self._broadcast_room_state(room_id, skip_sid=sid)
             except Exception as e:
                 logger.error(f"Error in join_room: {e}", exc_info=True)
                 await socket_gateway.emit_async("error", {"error": str(e)}, to=sid)
@@ -379,6 +479,9 @@ class GameApplication:
         async def on_submit_guess(sid, data):
             logger.info(f"Submit guess event from {sid}: {data}")
             try:
+                room_id = str(data.get("room_id") or "").strip().upper()
+                data = {**data, "room_id": room_id}
+
                 # Never trust a client-supplied player_id: use the identity bound
                 # to this socket when it joined the room.
                 if not session_registry.is_mc(sid):
@@ -392,6 +495,19 @@ class GameApplication:
                         return
                     data = {**data, "player_id": bound_player_id}
 
+                    # Eliminated players are spectators for the rest of the game.
+                    score = await self.score_repo.get(room_id, bound_player_id)
+                    if score and score.eliminated:
+                        await socket_gateway.emit_async(
+                            "submit_guess_response",
+                            {
+                                "success": False,
+                                "error": "You have been eliminated and can no longer submit guesses",
+                            },
+                            to=sid,
+                        )
+                        return
+
                 # Validate request
                 from src.modules.game_round.controller.round_controller import validate_submit_guess
                 valid, error = validate_submit_guess(data)
@@ -399,20 +515,20 @@ class GameApplication:
                     logger.warning(f"Invalid submit_guess: {error}")
                     await socket_gateway.emit_async("error", {"error": error}, to=sid)
                     return
-                
-                room_id = data.get("room_id")
+
                 logger.info(f"Processing submit_guess for player {data.get('player_id')} in room {room_id}")
                 result = await self.round_controller.submit_guess(data)
                 logger.info(f"Submit guess result: {result}")
 
                 if result.get("success"):
-                    message_publisher.publish_player_guess(
-                        {
-                            "room_id": room_id,
-                            "round_id": data.get("round_id"),
-                            "guess": result.get("guess"),
-                        }
+                    # Broadcast directly so the MC's "Waiting" badge flips
+                    # immediately; no broker round-trip for UI state.
+                    await socket_gateway.emit_async(
+                        "player_submitted",
+                        result.get("guess"),
+                        to=f"room_{room_id}",
                     )
+                    await self._broadcast_room_state(room_id)
                 else:
                     logger.warning(f"submit_guess rejected: {result.get('error')}")
 
@@ -437,7 +553,7 @@ class GameApplication:
                     await socket_gateway.emit_async("error", {"error": error}, to=sid)
                     return
 
-                room_id = data.get("room_id")
+                room_id = str(data.get("room_id") or "").strip().upper()
                 round_id = data.get("round_id")
 
                 # Only the MC that owns the room may end the round.
@@ -535,7 +651,7 @@ class GameApplication:
         async def on_start_round(sid, data):
             logger.info(f"Start round event from {sid}: {data}")
             try:
-                room_id = data.get("room_id")
+                room_id = str(data.get("room_id") or "").strip().upper()
                 if not room_id:
                     await socket_gateway.emit_async(
                         "error", {"error": "room_id is required"}, to=sid
@@ -547,6 +663,19 @@ class GameApplication:
                     await socket_gateway.emit_async(
                         "error",
                         {"error": "Only the MC that owns this room can start a round"},
+                        to=sid,
+                    )
+                    return
+
+                state = await self._build_room_state(room_id)
+                alive_players = [
+                    player for player in state.get("players", [])
+                    if not player.get("eliminated")
+                ]
+                if not alive_players:
+                    await socket_gateway.emit_async(
+                        "error",
+                        {"error": "No players are still alive in this room"},
                         to=sid,
                     )
                     return
@@ -568,7 +697,7 @@ class GameApplication:
                     )
                 except Exception as e:
                     logger.warning(f"Failed to broadcast round_started: {e}")
-                
+
                 # Confirm to MC
                 await socket_gateway.emit_async(
                     "start_round_response",
@@ -581,8 +710,35 @@ class GameApplication:
                     },
                     to=sid,
                 )
+
+                # New round => every "submitted" badge resets.
+                await self._broadcast_room_state(room_id)
             except Exception as e:
                 logger.error(f"Error in start_round: {e}")
+                await socket_gateway.emit_async("error", {"error": str(e)}, to=sid)
+
+        @socket_gateway.sio.on("request_room_state")
+        async def on_request_room_state(sid, data=None):
+            """Allow clients to resync after a reconnect or a page refresh."""
+            try:
+                room_id = str((data or {}).get("room_id") or "").strip().upper()
+                if not room_id:
+                    return
+
+                if not session_registry.is_mc(sid):
+                    session = session_registry.get(sid) or {}
+                    if session.get("room_id") != room_id:
+                        await socket_gateway.emit_async(
+                            "error",
+                            {"error": "Join the room before requesting its state"},
+                            to=sid,
+                        )
+                        return
+
+                state = await self._build_room_state(room_id)
+                await socket_gateway.emit_async("room_state", state, to=sid)
+            except Exception as e:
+                logger.error(f"Error in request_room_state: {e}")
                 await socket_gateway.emit_async("error", {"error": str(e)}, to=sid)
 
         @socket_gateway.sio.on("list_rooms")

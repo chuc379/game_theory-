@@ -10,8 +10,18 @@ REDIS_ROUND_RESULT = "room:{room_id}:round:{round_id}:result"
 REDIS_ROOM_HISTORY = "room:{room_id}:history"
 REDIS_ROOM_CURRENT_ROUND = "room:{room_id}:current_round"
 REDIS_ROOM_ROUND_STATUS = "room:{room_id}:round_status"
+REDIS_ROOM_SCORES = "room:{room_id}:scores"
 
 ROUND_DURATION_SECONDS = 30
+
+# Survival mode
+# Every player starts with this many lives. A wrong guess costs one life and a
+# player with zero lives is eliminated from the game.
+STARTING_LIVES = 5
+# A round is considered "converged" when the target (2/3 of the average) is this
+# close to 0. In that case every player who picked 0 loses a life instead of the
+# usual "wrong guess" penalty.
+CONVERGENCE_TARGET_THRESHOLD = 0.01
 
 # RabbitMQ
 RABBITMQ_EXCHANGE = "game.events.exchange"

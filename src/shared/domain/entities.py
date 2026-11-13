@@ -81,7 +81,7 @@ class RoundResult:
     total_players: int
     average: float
     target: float
-    winner: Winner
+    winner: Optional[Winner] = None
     force_calculate: bool = False
     calculated_at: float = None
 
@@ -94,14 +94,15 @@ class RoundResult:
             "total_players": self.total_players,
             "average": self.average,
             "target": self.target,
-            "winner": self.winner.to_dict(),
+            "winner": self.winner.to_dict() if self.winner else None,
             "force_calculate": self.force_calculate,
             "calculated_at": self.calculated_at,
         }
 
     @staticmethod
     def from_dict(data: dict) -> "RoundResult":
-        data["winner"] = Winner(**data["winner"])
+        winner = data.get("winner")
+        data = {**data, "winner": Winner(**winner) if winner else None}
         return RoundResult(**data)
 
 

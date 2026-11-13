@@ -79,7 +79,74 @@ SWAGGER_SPEC = {
                 "average": {"type": "number"},
                 "target": {"type": "number"},
                 "winner": {"$ref": "#/definitions/Winner"},
+                "rule": {"type": "string", "example": "survival"},
+                "convergence": {"type": "boolean"},
+                "guesses": {
+                    "type": "array",
+                    "items": {"$ref": "#/definitions/PlayerGuess"},
+                },
+                "losers": {"type": "array", "items": {"type": "string"}},
+                "correct": {"type": "array", "items": {"type": "string"}},
+                "eliminated": {
+                    "type": "array",
+                    "items": {"$ref": "#/definitions/PlayerScore"},
+                },
+                "game_over": {"type": "boolean"},
+                "survivor": {"$ref": "#/definitions/PlayerScore"},
+                "scoreboard": {
+                    "type": "array",
+                    "items": {"$ref": "#/definitions/PlayerScore"},
+                },
                 "calculated_at": {"type": "number"},
+            },
+        },
+        "PlayerScore": {
+            "type": "object",
+            "properties": {
+                "player_id": {"type": "string"},
+                "player_name": {"type": "string"},
+                "points": {"type": "integer"},
+                "total_points": {"type": "integer"},
+                "rounds_played": {"type": "integer"},
+                "wins": {"type": "integer"},
+                "eliminated": {"type": "boolean"},
+                "last_delta": {"type": "integer"},
+                "rank": {"type": "integer"},
+            },
+        },
+        "RoomState": {
+            "type": "object",
+            "properties": {
+                "room_id": {"type": "string"},
+                "current_round": {"type": "integer"},
+                "round_status": {
+                    "type": "string",
+                    "enum": ["WAITING", "LOCKED", "ENDED"],
+                },
+                "started_lives": {"type": "integer"},
+                "players": {
+                    "type": "array",
+                    "items": {"$ref": "#/definitions/RoomStatePlayer"},
+                },
+                "scoreboard": {
+                    "type": "array",
+                    "items": {"$ref": "#/definitions/PlayerScore"},
+                },
+            },
+        },
+        "RoomStatePlayer": {
+            "type": "object",
+            "properties": {
+                "player_id": {"type": "string"},
+                "player_name": {"type": "string"},
+                "socket_id": {"type": "string"},
+                "is_online": {"type": "boolean"},
+                "submitted": {"type": "boolean"},
+                "points": {"type": "integer"},
+                "eliminated": {"type": "boolean"},
+                "rounds_played": {"type": "integer"},
+                "wins": {"type": "integer"},
+                "last_delta": {"type": "integer"},
             },
         },
         "RoomInfo": {
@@ -166,6 +233,19 @@ SWAGGER_SPEC = {
         "player_submitted": {
             "description": "Broadcast when player submits guess",
             "payload": {"$ref": "#/definitions/PlayerGuess"},
+        },
+        "room_state": {
+            "description": "Authoritative room snapshot sent after join, submit, round start and round result",
+            "payload": {"$ref": "#/definitions/RoomState"},
+        },
+        "request_room_state": {
+            "description": "Ask the server for a fresh room_state (used after reconnect)",
+            "payload": {
+                "type": "object",
+                "required": ["room_id"],
+                "properties": {"room_id": {"type": "string"}},
+            },
+            "response": {"$ref": "#/definitions/RoomState"},
         },
         "round_result_ready": {
             "description": "Broadcast when round results are ready",

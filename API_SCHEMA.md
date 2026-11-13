@@ -20,28 +20,82 @@
 {
   "room_id": "CLB30",
   "player_name": "Nguyễn Văn A",
-  "socket_id": "socket_id_generated_by_socket.io"
+  "player_id": "usr_abc123"
 }
 ```
+- `room_id` is normalized to uppercase, so `clb30` and `CLB30` join the same room.
+- `player_id` is optional and lets a reconnecting client keep its identity.
+- The MC is decided by the server (JWT session), not by a client flag.
 
 - **Response** (`join_room_response`):
 ```json
 {
   "success": true,
   "message": "Player Nguyễn Văn A joined successfully",
+  "room_id": "CLB30",
   "player": {
     "player_id": "usr_abc123",
     "socket_id": "socket_12345",
     "name": "Nguyễn Văn A",
     "is_online": true,
     "joined_at": 1727337000000
-  }
+  },
+  "room_state": { "room_id": "CLB30", "players": [], "scoreboard": [] }
 }
 ```
 
 #### `player_joined` (Broadcast)
 - **Direction**: Server → All Clients (except sender)
 - **Payload**: Player object (same as join_room_response.player)
+- Emitted directly by the gateway, so the first join is never lost.
+
+#### `room_state` (Broadcast / Response)
+- **Direction**: Server → All Clients in the room
+- **Payload**: authoritative snapshot, sent after join, submit, round start and
+  round result, as well as in response to `request_room_state`:
+```json
+{
+  "room_id": "CLB30",
+  "current_round": 2,
+  "round_status": "LOCKED",
+  "started_lives": 5,
+  "players": [
+    {
+      "player_id": "usr_abc123",
+      "player_name": "Nguyễn Văn A",
+      "socket_id": "socket_12345",
+      "is_online": true,
+      "submitted": true,
+      "points": 4,
+      "eliminated": false,
+      "rounds_played": 2,
+      "wins": 0,
+      "last_delta": -1
+    }
+  ],
+  "scoreboard": [
+    {
+      "player_id": "usr_abc123",
+      "player_name": "Nguyễn Văn A",
+      "points": 4,
+      "total_points": 4,
+      "eliminated": false,
+      "last_delta": -1,
+      "rank": 1
+    }
+  ]
+}
+```
+- `round_status`: `WAITING` | `LOCKED` | `ENDED`.
+
+#### `request_room_state`
+- **Direction**: Client → Server
+- **Payload**:
+```json
+{ "room_id": "CLB30" }
+```
+- The server replies with a personal `room_state`. Only sockets that already
+  joined the room may request it. Used after a reconnect or page refresh.
 
 ### Game Round
 
@@ -102,7 +156,7 @@
   "room_id": "CLB30",
   "round_id": 1,
   "result": {
-    "total_players": 30,
+    "total_players": 5,
     "average": 45.5,
     "target": 30.33,
     "winner": {
@@ -111,10 +165,58 @@
       "guess_number": 30.0,
       "difference": 0.33
     },
+    "rule": "survival",
+    "convergence": false,
+    "guesses": [
+      {
+        "player_id": "usr_abc123",
+        "player_name": "Nguyễn Văn A",
+        "guess_number": 60.0,
+        "submitted_at": 1727337039000
+      }
+    ],
+    "losers": ["usr_abc123"],
+    "correct": ["usr_xyz789"],
+    "eliminated": [
+      {
+        "player_id": "usr_abc123",
+        "player_name": "Nguyễn Văn A",
+        "points": 0,
+        "eliminated": true,
+        "last_delta": -1
+      }
+    ],
+    "game_over": false,
+    "survivor": null,
+    "scoreboard": [
+      {
+        "player_id": "usr_xyz789",
+        "player_name": "Trần Thị B",
+        "points": 3,
+        "eliminated": false,
+        "last_delta": 0,
+        "rank": 1
+      }
+    ],
     "calculated_at": 1727337090000
   }
 }
 ```
+- `winner` may be `null` (converged round or nobody submitted).
+- `eliminated` contains only players eliminated by **this** round.
+- `game_over` is true when at most 1 player is still alive.
+
+### Survival Scoring Rules
+
+- Every player starts with `STARTING_LIVES = 5`.
+- Normal round: everyone whose guess is not the winning guess loses 1 life.
+  Players that did not submit count as wrong.
+- Converged round (`target <= 0.01`): every player who picked `0` loses 1 life;
+  everyone else is safe.
+- Lives are clamped at 0. Reaching 0 sets `eliminated = true`; eliminated
+  players cannot submit guesses (`submit_guess_response.success = false`).
+- Scores are stored in Redis and broadcast through `room_state`; clients must
+  not compute lives locally.
 
 ### Error Handling
 
@@ -134,6 +236,7 @@
 - `room:{room_id}:players` → Hash of all players
 - `room:{room_id}:round:{round_id}:guesses` → Hash of guesses
 - `room:{room_id}:round:{round_id}:result` → Round result
+- `room:{room_id}:scores` → Hash of survival scores (lives, eliminations)
 - `room:{room_id}:history` → List of past results
 
 ## Data Validation Rules
@@ -210,7 +313,8 @@ socket.on('player_submitted', (guess) => {
 ```javascript
 socket.on('round_result_ready', (data) => {
   console.log('Round result:', data.result);
-  console.log('Winner:', data.result.winner.player_name);
+  // winner is null on a converged round (or when nobody submitted)
+  console.log('Winner:', data.result.winner?.player_name ?? '—');
 });
 ```
 

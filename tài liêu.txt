@@ -1,0 +1,100 @@
+TÀI LIỆU THIẾT KẾ HỆ THỐNG & DATA MODEL
+TỰA GAME: GAME THEORY - GUESS 2/3 OF THE AVERAGE (ĐOÁN 2/3 TỔNG TRUNG BÌNH)
+1. TỔNG QUAN DỰ ÁN (OVERVIEW)Tên dự án: Guess 2/3 Average - Club Battle EditionQuy mô: $30 - 100$ người chơi đồng thời (Concurrent Users).Môi trường trải nghiệm: Thành viên quét mã QR bằng Zalo $\rightarrow$ Mở In-App Webview $\rightarrow$ Tham gia phòng chơi real-time.Mục tiêu hệ thống:Xử lý giao tiếp Real-time độ trễ cực thấp ($<50\text{ms}$).Áp dụng mô hình Asynchronous Worker Queue (RabbitMQ) để tách biệt luồng nhận dữ liệu và luồng xử lý tính toán.Lưu trữ In-Memory trên Redis để đảm bảo tốc độ và khả năng phục hồi session (State Persistence).
+
+          │
+          │ (WebSocket / HTTP Long-Polling)
+          ▼
+┌────────────────────────────────────────────────────────┐
+│               SOCKET.IO GATEWAY SERVER                 │
+│  - Quản lý kết nối Client & Màn hình MC                │
+│  - Nhận số nhập từ Zalo                                │
+└──────────────────────────┬─────────────────────────────┘
+                           │
+                           │ (Publish Event)
+                           ▼
+┌────────────────────────────────────────────────────────┐
+│                   RABBITMQ BROKER                      │
+│  - Exchange: `game.exchange` (Topic)                   │
+│  - Queue: `player.guesses.queue`                       │
+└──────────────────────────┬─────────────────────────────┘
+                           │
+                           │ (Consume Task)
+                           ▼
+┌────────────────────────────────────────────────────────┐
+│                    GAME WORKER                         │
+│  - Lấy Task từ RabbitMQ                                │
+│  - Ghi/Đọc dữ liệu từ REDIS DATA STORE                 │
+│  - Tính toán Average, 2/3 Target & Winner              │
+└──────────────────────────┬─────────────────────────────┘
+                           │
+                           │ (Broadcast Result Event)
+                           ▼
+               [Lưu Kết Quả Vào Redis & Trả Về Socket Gateway]
+3. QUY TRÌNH VẬN HÀNH GAME (GAMEFLOW SEQUENCE)1.Mở phòng & Quét QR:MC khởi tạo room.MC mở giao diện /mc, bấm "Khởi tạo Vòng 1". Mã QR được sinh ra chứa URL: https://<domain>/play?room=CLB30. Thành viên quét QR qua Zalo để truy cập.2.Gửi đáp án (Async Task):Thành viên nhập số từ 0 - 100.Thành viên nhập Tên & Số chọn $\rightarrow$ Socket Gateway nhận Request $\rightarrow$ Đẩy ngay Event PLAYER_SUBMITTED vào RabbitMQ Queue $\rightarrow$ Báo Zalo Client "Đã nhận đáp án!".3.Xử lý Queue & Lưu Redis:Worker thực thi công việc.Worker tiêu thụ Message từ RabbitMQ $\rightarrow$ Lưu thông tin người chơi và con số vào Redis Hash tương ứng với Vòng đấu.4.Khóa sổ & Tính kết quả:MC bấm Chốt sổ.MC bấm "Tính Kết Quả" $\rightarrow$ Gateway bắn Event vào Queue $\rightarrow$ Worker kéo toàn bộ Submissions từ Redis $\rightarrow$ Tính $2/3 \times \text{AVERAGE}$ $\rightarrow$ Xác định Winner $\rightarrow$ Lưu kết quả vào Redis & Emit tới tất cả các máy.4. BẢN TRỪU TƯỢNG HÓA DATA MODEL (DATA MODELS SPECIFICATION)Dưới đây là thiết kế Schema cho Redis Data Store và Format Message truyền qua RabbitMQ.4.1. Entity Schema (TypeScript Interfaces)A. User & Session ModelTypeScriptinterface PlayerSession {
+  playerId: string;       // Unique ID (UUIDv4 hoặc Generated Device Fingerprint)
+  socketId: string;       // ID kết nối Socket.io hiện tại
+  name: string;           // Biệt danh người chơi
+  isOnline: boolean;      // Trạng thái kết nối
+  joinedAt: number;       // Timestamp gia nhập phòng
+}
+B. Game Round ModelTypeScriptinterface PlayerGuess {
+  playerId: string;
+  playerName: string;
+  guessNumber: number;   // Con số chọn (0.00 - 100.00)
+  submittedAt: number;   // Timestamp nộp bài
+}
+
+interface RoundResult {
+  totalPlayers: number;  // Tổng số người tham gia nộp bài
+  average: number;       // Giá trị trung bình cộng
+  target: number;        // Target = Average * (2/3)
+  winner: {
+    playerId: string;
+    playerName: string;
+    guessNumber: number;
+    difference: number;  // Độ lệch so với Target (|Guess - Target|)
+  };
+  calculatedAt: number;
+}
+
+enum RoundStatus {
+  WAITING = 'WAITING',   // Đang chờ người chơi gửi số
+  LOCKED = 'LOCKED',     // Hết giờ/Đã khóa sổ, đang tính toán
+  ENDED = 'ENDED'        // Đã có kết quả
+}
+
+interface GameRound {
+  roundId: number;       // Vòng 1, Vòng 2, Vòng 3...
+  status: RoundStatus;
+  result: RoundResult | null;
+}
+4.2. Thiết Kế Lưu Trữ Trên REDIS (Redis Key-Value Strategy)Dữ liệu được tổ chức theo các Redis Data Structures tối ưu:Redis Key PatternKey TypeMô tả & Cấu trúc dữ liệuroom:{roomId}:infoHashLưu trạng thái phòng.{ currentRound: "1", status: "PLAYING" }room:{roomId}:playersHashLưu danh sách người chơi trong phòng.Field: playerId $\rightarrow$ Value: JSON.stringify(PlayerSession)room:{roomId}:round:{roundId}:guessesHashLưu các con số người chơi đã nộp trong vòng.Field: playerId $\rightarrow$ Value: JSON.stringify(PlayerGuess)room:{roomId}:round:{roundId}:resultString (JSON)Lưu kết quả tính toán cuối cùng của vòng.Value: JSON.stringify(RoundResult)room:{roomId}:historyListDanh sách chứa lịch sử kết quả các vòng đã chơi (để MC hiển thị biểu đồ tiến hóa).4.3. Định Dạng Message Trên RABBITMQ (Message Formats)Exchange Name: game.events.exchange (Type: topic)Routing Keys:game.player.submit (Khi người chơi gửi số)game.round.calculate (Khi MC yêu cầu tính toán)Message 1: Nộp đáp án (game.player.submit)JSON{
+  "eventId": "evt_987654321",
+  "eventType": "PLAYER_SUBMIT_GUESS",
+  "timestamp": 1727337039000,
+  "payload": {
+    "roomId": "CLB30",
+    "roundId": 1,
+    "playerId": "usr_abc123",
+    "playerName": "Nguyễn Văn A",
+    "guessNumber": 22.5
+  }
+}
+Message 2: Yêu cầu tính kết quả (game.round.calculate)JSON{
+  "eventId": "evt_123456789",
+  "eventType": "CALCULATE_ROUND_RESULT",
+  "timestamp": 1727337090000,
+  "payload": {
+    "roomId": "CLB30",
+    "roundId": 1
+  }
+}
+5. THUẬT TOÁN TÍNH TOÁN CỦA WORKER (WORKER LOGIC)Khi Worker nhận Message CALCULATE_ROUND_RESULT từ RabbitMQ:PlaintextStep 1: Đọc tất cả entries từ Redis Hash `room:{roomId}:round:{roundId}:guesses`.
+Step 2: Nếu (length == 0) -> Return No Submissions.
+Step 3: Tính Sum = Sum + guessNumber.
+Step 4: Average = Sum / length.
+Step 5: Target = Average * (2 / 3).
+Step 6: Duyệt qua danh sách, tìm Player có |guessNumber - Target| nhỏ nhất.
+Step 7: Ghi RoundResult vào Redis Key `room:{roomId}:round:{roundId}:result`.
+Step 8: Bắn Socket Event `ROUND_RESULT_READY` về cho Socket Gateway để gửi tới Zalo Clients & MC View.
