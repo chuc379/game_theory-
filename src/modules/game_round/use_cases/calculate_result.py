@@ -53,20 +53,22 @@ class CalculateResultUseCase:
             if guesses:
                 average = round_entity.calculate_average(guesses)
                 target = round_entity.calculate_target(average)
-                winner_data = round_entity.find_winner(guesses, target)
+                winners_data = round_entity.find_winners(guesses, target)
             else:
                 # A survival round must still resolve (everyone alive loses a
                 # life) instead of getting stuck because nobody submitted.
                 average = 0.0
                 target = 0.0
-                winner_data = None
+                winners_data = []
 
+            winner_data = winners_data[0] if winners_data else None
             winner = Winner(**winner_data) if winner_data else None
             convergence = bool(guesses) and target <= CONVERGENCE_TARGET_THRESHOLD
 
             # A converged round has no winner: picking 0 is a losing move.
             if convergence:
                 winner = None
+                winners_data = []
 
             result = RoundResult(
                 total_players=len(guesses),
@@ -91,6 +93,7 @@ class CalculateResultUseCase:
                     "guesses": [guess.to_dict() for guess in guesses],
                     "rule": "survival",
                     "convergence": convergence,
+                    "winners": winners_data,
                     "losers": scoring.get("loser_ids", []),
                     "correct": scoring.get("correct_ids", []),
                     "eliminated": scoring.get("eliminated", []),

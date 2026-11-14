@@ -269,6 +269,33 @@
   created. Tokens expire after `PLAYER_JWT_EXPIRE_MINUTES` (default **120**).
 - `join_room_response` returns `player_token`, `player_token_expires_in`,
   `rejoined`, `reauth` and `config`.
+- Player names are limited to **8 characters** so the survival chart columns
+  stay readable. Longer names are rejected with
+  `code: "player_name_too_long"`.
+
+### `round_tick` (broadcast, every second)
+- Sent while a round is running. The server owns the countdown, so every client
+  renders the same number (even after a reconnect or in a background tab).
+- **Payload**:
+```json
+{
+  "room_id": "ABC123",
+  "round_id": 4,
+  "time_left": 27,
+  "deadline": 1727337090000
+}
+```
+- `deadline` is an epoch millisecond timestamp; clients interpolate smoothly
+  between ticks and resync on every tick.
+- `start_round`, `start_round_response`, `round_started` and `room_state` also
+  carry `deadline` / `time_left` (or `round_deadline`) for late joiners.
+
+### Multiple winners
+- `round_result_ready.result.winners` lists **every** player tied on the
+  winning number, each with `player_id`, `player_name`, `guess_number` and
+  `difference`. `result.winner` remains the first of them for compatibility.
+- `result.guesses` is only sent once the round has ended, so clients must not
+  reveal the chosen numbers while a round is still running.
 
 ### `player_executed` (broadcast)
 - Sent after `round_result_ready` when at least one player reached 0 lives.

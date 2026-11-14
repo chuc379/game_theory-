@@ -1,8 +1,11 @@
 """
 Main application entry point - Socket.io gateway server (Starlette)
 """
+import asyncio
 import logging
+import math
 import os
+import time
 from contextlib import asynccontextmanager
 from socketio import ASGIApp
 from starlette.applications import Starlette
@@ -54,6 +57,7 @@ from src.modules.room.controller.room_controller import RoomController
 from src.shared.infrastructure.messaging.message_publisher import message_publisher
 from src.shared.infrastructure.messaging.event_consumer import EventConsumer
 from src.shared.constants import (
+    PLAYER_NAME_MAX_LENGTH,
     QUEUE_GATEWAY_ROUND_RESULTS,
     QUEUE_WORKER_CALCULATE_RESULTS,
     ROUND_DURATION_SECONDS,
@@ -80,6 +84,10 @@ class GameApplication:
         self.score_repo = None
         self.event_consumer = None
         self.initialized = False
+        # Server authoritative round countdown: room_id -> epoch milliseconds
+        # deadline and the asyncio task that broadcasts `round_tick` each second.
+        self.round_deadlines: dict = {}
+        self.round_tasks: dict = {}
 
     async def initialize(self) -> None:
         """Initialize application"""
@@ -206,6 +214,12 @@ class GameApplication:
             "room_id": room_id,
             "current_round": current_round,
             "round_status": round_status,
+            "round_deadline": self.round_deadlines.get(room_id),
+            "time_left": (
+                self._round_time_left(room_id)
+                if round_status == RoundStatus.LOCKED
+                else 0
+            ),
             "players": player_entries,
             "scoreboard": scoreboard,
             "started_lives": STARTING_LIVES,
@@ -243,6 +257,81 @@ class GameApplication:
         """Normalised config for a room (defaults when it is missing)."""
         info = await self.room_controller.get_room(room_id) or {}
         return normalize_room_config(info.get("config"))
+
+    # ------------------------------------------------------------- round timer
+
+    def _round_time_left(self, room_id: str) -> int:
+        """Remaining seconds of the active round, as known by the server."""
+        deadline = self.round_deadlines.get(room_id)
+        if not deadline:
+            return 0
+        return max(0, int(math.ceil(deadline / 1000 - time.time())))
+
+    def _cancel_round_timer(self, room_id: str) -> None:
+        """Stop the countdown of a room (round ended / room deleted)."""
+        task = self.round_tasks.pop(room_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+        self.round_deadlines.pop(room_id, None)
+
+    async def _round_tick_loop(
+        self, room_id: str, round_id: int, deadline_ms: int
+    ) -> None:
+        """Broadcast the authoritative countdown once per second.
+
+        Every client (MC and players) renders the same number because it comes
+        from the server, instead of each tab decrementing its own clock.
+        """
+        try:
+            while True:
+                remaining = max(
+                    0, int(math.ceil(deadline_ms / 1000 - time.time()))
+                )
+                try:
+                    await socket_gateway.emit_async(
+                        "round_tick",
+                        {
+                            "room_id": room_id,
+                            "round_id": round_id,
+                            "time_left": remaining,
+                            "deadline": deadline_ms,
+                        },
+                        to=f"room_{room_id}",
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to broadcast round_tick for {room_id}: {e}"
+                    )
+
+                if remaining <= 0:
+                    break
+                await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(
+                f"Round timer failed for room {room_id}: {e}", exc_info=True
+            )
+        finally:
+            if self.round_deadlines.get(room_id) == deadline_ms:
+                self.round_deadlines.pop(room_id, None)
+
+    def _start_round_timer(
+        self, room_id: str, round_id: int, duration: int = ROUND_DURATION_SECONDS
+    ) -> int:
+        """Start (or restart) the authoritative countdown of a room."""
+        self._cancel_round_timer(room_id)
+        deadline_ms = int((time.time() + duration) * 1000)
+        self.round_deadlines[room_id] = deadline_ms
+        try:
+            self.round_tasks[room_id] = asyncio.create_task(
+                self._round_tick_loop(room_id, round_id, deadline_ms)
+            )
+        except RuntimeError as e:
+            # No running event loop (tests): the deadline still works for
+            # state snapshots, clients fall back to their local timer.
+            logger.warning(f"Could not start round timer for {room_id}: {e}")
+        return deadline_ms
 
     async def _announce_executions(
         self, room_id: str, round_id, result: dict
@@ -372,6 +461,8 @@ class GameApplication:
             return
 
         result = event.get("result") or {}
+        # The round is over: stop broadcasting the countdown.
+        self._cancel_round_timer(room_id)
         try:
             await self.room_controller.end_round(room_id)
         except Exception as e:
@@ -429,6 +520,7 @@ class GameApplication:
             )
             return result
 
+        self._cancel_round_timer(room_id)
         await self.room_controller.end_round(room_id)
         result_payload = result.get("result") or {}
         try:
@@ -630,6 +722,29 @@ class GameApplication:
                         )
                         return
 
+                    # Keep column labels readable in the survival chart.
+                    # Existing identities are exempt so an old long name can
+                    # still rejoin after this limit was introduced.
+                    if (
+                        player_name
+                        and not identity
+                        and len(player_name) > PLAYER_NAME_MAX_LENGTH
+                    ):
+                        await socket_gateway.emit_async(
+                            "join_room_response",
+                            {
+                                "success": False,
+                                "error": (
+                                    "Tên người chơi tối đa "
+                                    f"{PLAYER_NAME_MAX_LENGTH} ký tự"
+                                ),
+                                "code": "player_name_too_long",
+                                "max_length": PLAYER_NAME_MAX_LENGTH,
+                            },
+                            to=sid,
+                        )
+                        return
+
                     # ---- Session policy (Strategy/Factory): may this device
                     # open another player link right now?
                     config = normalize_room_config(info.get("config"))
@@ -752,6 +867,8 @@ class GameApplication:
                                     "room_id": room_id,
                                     "round_id": state["current_round"],
                                     "duration": ROUND_DURATION_SECONDS,
+                                    "time_left": state.get("time_left", 0),
+                                    "deadline": state.get("round_deadline"),
                                 },
                                 to=sid,
                             )
@@ -1012,6 +1129,10 @@ class GameApplication:
                     )
 
                 round_id = await self.room_controller.start_round(room_id)
+                # The server owns the countdown and broadcasts it every second.
+                deadline_ms = self._start_round_timer(
+                    room_id, round_id, ROUND_DURATION_SECONDS
+                )
                 logger.info(f"Room {room_id} started round {round_id}")
 
                 # Broadcast round_started to all players in room
@@ -1022,6 +1143,8 @@ class GameApplication:
                             "room_id": room_id,
                             "round_id": round_id,
                             "duration": ROUND_DURATION_SECONDS,
+                            "time_left": ROUND_DURATION_SECONDS,
+                            "deadline": deadline_ms,
                         },
                         room=f"room_{room_id}",
                         skip_sid=sid,
@@ -1038,6 +1161,8 @@ class GameApplication:
                         "room_id": room_id,
                         "round_id": round_id,
                         "duration": ROUND_DURATION_SECONDS,
+                        "time_left": ROUND_DURATION_SECONDS,
+                        "deadline": deadline_ms,
                     },
                     to=sid,
                 )
@@ -1220,6 +1345,7 @@ class GameApplication:
                     "delete_room_response", result, to=sid
                 )
                 if result.get("success"):
+                    self._cancel_round_timer(room_id)
                     try:
                         await socket_gateway.emit_async(
                             "room_closed",

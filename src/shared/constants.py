@@ -21,6 +21,9 @@ ROUND_DURATION_SECONDS = 30
 ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 ROOM_CODE_LENGTH = 6
 
+# Player names are kept short so the survival chart columns stay readable.
+PLAYER_NAME_MAX_LENGTH = 8
+
 # Survival mode
 # Every player starts with this many lives. A wrong guess costs one life and a
 # player with zero lives is eliminated from the game.

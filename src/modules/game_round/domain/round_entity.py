@@ -33,15 +33,30 @@ class RoundEntity(GameRound):
         """Calculate 2/3 of average"""
         return average * (2 / 3)
 
-    def find_winner(self, guesses: List[PlayerGuess], target: float) -> Optional[dict]:
-        """Find player closest to target"""
-        if not guesses:
-            return None
+    def find_winners(self, guesses: List[PlayerGuess], target: float) -> List[dict]:
+        """Find every player tied for the closest guess.
 
-        winner_guess = min(guesses, key=lambda g: abs(g.guess_number - target))
-        return {
-            "player_id": winner_guess.player_id,
-            "player_name": winner_guess.player_name,
-            "guess_number": winner_guess.guess_number,
-            "difference": abs(winner_guess.guess_number - target),
-        }
+        Two players that pick the same winning number are both winners: the
+        round is decided by the *number*, not by which player submitted first.
+        """
+        if not guesses:
+            return []
+
+        best_difference = min(
+            abs(g.guess_number - target) for g in guesses
+        )
+        return [
+            {
+                "player_id": guess.player_id,
+                "player_name": guess.player_name,
+                "guess_number": guess.guess_number,
+                "difference": abs(guess.guess_number - target),
+            }
+            for guess in guesses
+            if abs(abs(guess.guess_number - target) - best_difference) < 1e-9
+        ]
+
+    def find_winner(self, guesses: List[PlayerGuess], target: float) -> Optional[dict]:
+        """Find the first player closest to target (kept for compatibility)"""
+        winners = self.find_winners(guesses, target)
+        return winners[0] if winners else None
