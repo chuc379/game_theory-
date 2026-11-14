@@ -62,6 +62,15 @@ class ScoreCacheRepository(IScoreRepository):
             logger.error(f"Failed to save scoreboard for room {room_id}: {e}")
             raise
 
+    async def delete(self, room_id: str, player_id: str) -> None:
+        """Remove a player's survival score (used when a test link is demoted)"""
+        try:
+            await self.cache.hdel(self._get_key(room_id), player_id)
+        except Exception as e:
+            logger.error(
+                f"Failed to delete score for player {player_id} in room {room_id}: {e}"
+            )
+
     async def ensure_player(
         self, room_id: str, player_id: str, player_name: str
     ) -> PlayerScore:

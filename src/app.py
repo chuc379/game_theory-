@@ -16,9 +16,13 @@ from src.shared.infrastructure.socket_io.socket_gateway import socket_gateway
 from src.shared.infrastructure.cache.redis_client import redis_client
 from src.shared.infrastructure.messaging.rabbitmq_client import rabbitmq_client
 
-# Authentication (MC login)
+# Authentication (MC login + player identity)
 from src.modules.auth.service import auth_service
-from src.modules.auth.tokens import verify_access_token
+from src.modules.auth.tokens import (
+    create_player_token,
+    verify_access_token,
+    verify_player_token,
+)
 from src.modules.auth.session_registry import session_registry
 
 # Initialize repositories
@@ -29,6 +33,11 @@ from src.modules.game_round.adapter.round_cache_repository import (
 )
 from src.modules.game_round.adapter.score_cache_repository import ScoreCacheRepository
 from src.modules.room.adapter.room_cache_repository import RoomCacheRepository
+from src.modules.room.session_policy import (
+    SessionContext,
+    SessionPolicyFactory,
+    normalize_room_config,
+)
 from src.shared.domain.scoring import RoomScoreboard
 
 # Initialize use cases
@@ -191,6 +200,8 @@ class GameApplication:
             players=list(score_map.values()),
         ).get_ranking()
 
+        info = await self.room_controller.get_room(room_id) or {}
+
         return {
             "room_id": room_id,
             "current_round": current_round,
@@ -198,6 +209,8 @@ class GameApplication:
             "players": player_entries,
             "scoreboard": scoreboard,
             "started_lives": STARTING_LIVES,
+            "owner_mc": info.get("owner_mc"),
+            "config": SessionPolicyFactory.describe(info.get("config")),
         }
 
     async def _broadcast_room_state(self, room_id: str, skip_sid: str = None) -> dict:
@@ -226,6 +239,130 @@ class GameApplication:
         except Exception as e:
             logger.warning(f"Failed to refresh player count for room {room_id}: {e}")
 
+    async def _room_config(self, room_id: str) -> dict:
+        """Normalised config for a room (defaults when it is missing)."""
+        info = await self.room_controller.get_room(room_id) or {}
+        return normalize_room_config(info.get("config"))
+
+    async def _announce_executions(
+        self, room_id: str, round_id, result: dict
+    ) -> None:
+        """Tell the whole room exactly who was executed this round.
+
+        The server only ever removes the executed players from the game; it
+        never terminates itself or the room because of an elimination.
+        """
+        eliminated = result.get("eliminated") if isinstance(result, dict) else None
+        if not isinstance(eliminated, list) or not eliminated:
+            return
+
+        players = []
+        for entry in eliminated:
+            if not isinstance(entry, dict):
+                continue
+            players.append(
+                {
+                    "player_id": entry.get("player_id"),
+                    "player_name": entry.get("player_name")
+                    or entry.get("name")
+                    or "Unknown",
+                }
+            )
+        if not players:
+            return
+
+        names = [player["player_name"] for player in players]
+        payload = {
+            "room_id": room_id,
+            "round_id": round_id,
+            "players": players,
+            "names": names,
+            "message": f"☠️ Đã xử tử: {', '.join(names)}",
+        }
+        try:
+            await socket_gateway.emit_async(
+                "player_executed", payload, to=f"room_{room_id}"
+            )
+            logger.info(
+                f"Announced execution in room {room_id} round {round_id}: {names}"
+            )
+        except Exception as e:
+            # A broadcast failure must never take the gateway down.
+            logger.error(
+                f"Failed to announce executions for room {room_id}: {e}",
+                exc_info=True,
+            )
+
+    async def _enforce_round_link_limit(self, room_id: str) -> list:
+        """When a match starts, demote extra links from the same device.
+
+        Only used by rooms that allow several player links for testing and
+        enable ``lock_on_round_start``. The extra (test) players are removed
+        from the game and their tabs become spectators; the first link of each
+        device keeps playing.
+        """
+        config = await self._room_config(room_id)
+        round_active = (
+            await self.room_controller.get_round_status(room_id)
+            == RoundStatus.LOCKED
+        )
+        if config.get("session_mode") == "single_link":
+            # Single-link rooms never allow a second player link per device.
+            pass
+        elif not (config.get("lock_on_round_start") and round_active):
+            return []
+
+        grouped: dict = {}
+        for sid in session_registry.player_sids(room_id):
+            device_id = session_registry.device_id(sid)
+            if not device_id:
+                continue
+            grouped.setdefault(device_id, []).append(sid)
+
+        demoted = []
+        for sids in grouped.values():
+            if len(sids) <= 1:
+                continue
+            for sid in sids[1:]:
+                player_id = session_registry.player_id(sid)
+                session_registry.mark_spectator(sid, "multiple_links")
+                if player_id:
+                    try:
+                        await self.player_repo.delete(room_id, player_id)
+                    except Exception as e:
+                        logger.warning(
+                            f"Could not remove demoted player {player_id}: {e}"
+                        )
+                    try:
+                        await self.score_repo.delete(room_id, player_id)
+                    except Exception as e:
+                        logger.warning(
+                            f"Could not remove demoted score {player_id}: {e}"
+                        )
+                demoted.append(player_id)
+                try:
+                    await socket_gateway.emit_async(
+                        "session_demoted",
+                        {
+                            "room_id": room_id,
+                            "player_id": player_id,
+                            "message": (
+                                "Ván đấu đã bắt đầu: mỗi máy chỉ được dùng 1 "
+                                "link người chơi. Tab này chuyển sang khán giả."
+                            ),
+                        },
+                        to=sid,
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not notify demoted socket {sid}: {e}")
+
+        if demoted:
+            await self._refresh_player_count(room_id)
+            logger.info(
+                f"Demoted {len(demoted)} extra player link(s) in room {room_id}"
+            )
+        return demoted
+
     async def on_round_result_ready_event(self, event: dict) -> None:
         """Handle computed round result coming back from the worker"""
         room_id = event.get("room_id")
@@ -234,16 +371,29 @@ class GameApplication:
             logger.error(f"Malformed round result event: {event}")
             return
 
-        await self.room_controller.end_round(room_id)
-        await socket_gateway.emit_async(
-            "round_result_ready",
-            {
-                "room_id": room_id,
-                "round_id": round_id,
-                "result": event.get("result"),
-            },
-            to=f"room_{room_id}",
-        )
+        result = event.get("result") or {}
+        try:
+            await self.room_controller.end_round(room_id)
+        except Exception as e:
+            logger.warning(f"Could not close round {round_id} for room {room_id}: {e}")
+
+        try:
+            await socket_gateway.emit_async(
+                "round_result_ready",
+                {
+                    "room_id": room_id,
+                    "round_id": round_id,
+                    "result": result,
+                },
+                to=f"room_{room_id}",
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to broadcast round {round_id} result for room {room_id}: {e}",
+                exc_info=True,
+            )
+
+        await self._announce_executions(room_id, round_id, result)
         await self._broadcast_room_state(room_id)
         logger.info(f"Broadcast round {round_id} result for room {room_id}")
 
@@ -280,15 +430,24 @@ class GameApplication:
             return result
 
         await self.room_controller.end_round(room_id)
-        await socket_gateway.emit_async(
-            "round_result_ready",
-            {
-                "room_id": room_id,
-                "round_id": round_id,
-                "result": result.get("result"),
-            },
-            to=f"room_{room_id}",
-        )
+        result_payload = result.get("result") or {}
+        try:
+            await socket_gateway.emit_async(
+                "round_result_ready",
+                {
+                    "room_id": room_id,
+                    "round_id": round_id,
+                    "result": result_payload,
+                },
+                to=f"room_{room_id}",
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to broadcast inline result for room {room_id}: {e}",
+                exc_info=True,
+            )
+
+        await self._announce_executions(room_id, round_id, result_payload)
         await self._broadcast_room_state(room_id)
         logger.info(
             f"Broadcast round {round_id} result for room {room_id} (inline)"
@@ -319,9 +478,26 @@ class GameApplication:
             """Players connect anonymously; an MC must present a valid JWT.
 
             The token is sent by the client in the Socket.IO handshake auth
-            payload: io(url, { auth: { token } }).
+            payload: io(url, { auth: { token, device_id, player_token } }).
             """
-            token = auth.get("token") if isinstance(auth, dict) else None
+            auth = auth if isinstance(auth, dict) else {}
+            token = auth.get("token")
+            device_id = str(auth.get("device_id") or "").strip() or None
+            if device_id:
+                session_registry.bind_device(sid, device_id)
+
+            # A player token identifies the player across reconnects. An expired
+            # token is not fatal: the player can still join as a new identity.
+            player_token = auth.get("player_token")
+            if player_token:
+                identity = verify_player_token(player_token)
+                if identity:
+                    session_registry.bind_player_token(sid, identity)
+                else:
+                    logger.info(
+                        f"Socket {sid} presented an expired/invalid player token"
+                    )
+
             if token:
                 username = verify_access_token(token)
                 if not username:
@@ -332,7 +508,16 @@ class GameApplication:
             role = "mc" if session_registry.is_mc(sid) else "player"
             logger.info(f"Client connected: {sid} (role={role})")
             await socket_gateway.emit_async(
-                "connection_response", {"data": "Connected", "role": role}, to=sid
+                "connection_response",
+                {
+                    "data": "Connected",
+                    "role": role,
+                    "device_id": device_id,
+                    "player_authenticated": bool(
+                        session_registry.player_identity(sid)
+                    ),
+                },
+                to=sid,
             )
 
         @socket_gateway.sio.on("disconnect")
@@ -385,14 +570,109 @@ class GameApplication:
                         "room_id": room_id,
                         "player": None,
                         "room_state": state,
+                        "config": state.get("config"),
                     }
                 else:
+                    info = await self.room_controller.get_room(room_id)
+                    if not info:
+                        await socket_gateway.emit_async(
+                            "join_room_response",
+                            {
+                                "success": False,
+                                "error": "Không tìm thấy phòng này",
+                                "code": "room_not_found",
+                            },
+                            to=sid,
+                        )
+                        return
+
+                    # ---- Identity: a valid player JWT always wins over any
+                    # client supplied player_id, so a rejoin maps to the same
+                    # player instead of creating a duplicate.
+                    device_id = (
+                        session_registry.device_id(sid)
+                        or str(data.get("device_id") or "").strip()
+                        or None
+                    )
+                    if device_id:
+                        session_registry.bind_device(sid, device_id)
+
+                    identity = session_registry.player_identity(sid)
+                    if identity and identity.get("room_id") != room_id:
+                        identity = None
+
+                    token_expired = False
+                    supplied_token = data.get("player_token")
+                    if not identity and supplied_token:
+                        candidate = verify_player_token(supplied_token)
+                        if candidate and candidate.get("room_id") == room_id:
+                            identity = candidate
+                            session_registry.bind_player_token(sid, candidate)
+                        else:
+                            token_expired = True
+
+                    resolved_player_id = (
+                        identity.get("player_id") if identity
+                        else (data.get("player_id") or None)
+                    )
+                    resolved_name = (
+                        player_name
+                        or (identity.get("player_name") if identity else "")
+                    )
+                    if not resolved_name:
+                        await socket_gateway.emit_async(
+                            "join_room_response",
+                            {
+                                "success": False,
+                                "error": "player_name is required",
+                            },
+                            to=sid,
+                        )
+                        return
+
+                    # ---- Session policy (Strategy/Factory): may this device
+                    # open another player link right now?
+                    config = normalize_room_config(info.get("config"))
+                    round_active = (
+                        await self.room_controller.get_round_status(room_id)
+                        == RoundStatus.LOCKED
+                    )
+                    policy = SessionPolicyFactory.create(config)
+                    decision = policy.decide(
+                        SessionContext(
+                            role="player",
+                            device_id=device_id,
+                            existing_sids=session_registry.player_sids(
+                                room_id, device_id
+                            ),
+                            round_active=round_active,
+                        )
+                    )
+                    if not decision.allowed:
+                        await socket_gateway.emit_async(
+                            "join_room_response",
+                            {
+                                "success": False,
+                                "error": decision.reason,
+                                "code": decision.code,
+                                "limit": decision.limit,
+                            },
+                            to=sid,
+                        )
+                        return
+
+                    existing_player = None
+                    if resolved_player_id:
+                        existing_player = await self.player_repo.find_by_id(
+                            room_id, resolved_player_id
+                        )
+
                     result = await self.player_controller.join_room(
                         {
                             "room_id": room_id,
-                            "player_name": player_name,
+                            "player_name": resolved_name,
                             "socket_id": sid,
-                            "player_id": data.get("player_id"),
+                            "player_id": resolved_player_id,
                         }
                     )
 
@@ -415,8 +695,35 @@ class GameApplication:
 
                     # Create the player's survival lives on first join.
                     await self.score_repo.ensure_player(
-                        room_id, player_id, player.get("name") or player_name
+                        room_id, player_id, player.get("name") or resolved_name
                     )
+
+                    # Issue a fresh 2 hour identity token for rejoin.
+                    player_token = create_player_token(
+                        player_id=player_id,
+                        room_id=room_id,
+                        player_name=player.get("name") or resolved_name,
+                        device_id=device_id,
+                    )
+                    result["player_token"] = player_token
+                    result["player_token_expires_in"] = (
+                        settings.PLAYER_JWT_EXPIRE_MINUTES * 60
+                    )
+                    result["rejoined"] = bool(existing_player)
+                    result["reauth"] = token_expired
+                    result["config"] = SessionPolicyFactory.describe(config)
+                    result["device_id"] = device_id
+
+                    if player_token:
+                        session_registry.bind_player_token(
+                            sid,
+                            {
+                                "player_id": player_id,
+                                "room_id": room_id,
+                                "player_name": player.get("name") or resolved_name,
+                                "device_id": device_id,
+                            },
+                        )
 
                     # Tell the room immediately. The previous broker round-trip
                     # meant the MC often missed the very first join.
@@ -485,6 +792,21 @@ class GameApplication:
                 # Never trust a client-supplied player_id: use the identity bound
                 # to this socket when it joined the room.
                 if not session_registry.is_mc(sid):
+                    if session_registry.is_spectator(sid):
+                        await socket_gateway.emit_async(
+                            "submit_guess_response",
+                            {
+                                "success": False,
+                                "error": (
+                                    "Bạn đang ở chế độ khán giả (link test đã bị "
+                                    "đóng khi ván đấu bắt đầu)"
+                                ),
+                                "code": "spectator",
+                            },
+                            to=sid,
+                        )
+                        return
+
                     bound_player_id = session_registry.player_id(sid)
                     if not bound_player_id:
                         await socket_gateway.emit_async(
@@ -680,6 +1002,15 @@ class GameApplication:
                     )
                     return
 
+                # If the room allows several test links but is configured to
+                # lock down for the match, demote the extra links first.
+                demoted = await self._enforce_round_link_limit(room_id)
+                if demoted:
+                    logger.info(
+                        f"Room {room_id}: {len(demoted)} extra link(s) demoted "
+                        f"before round start"
+                    )
+
                 round_id = await self.room_controller.start_round(room_id)
                 logger.info(f"Room {room_id} started round {round_id}")
 
@@ -741,30 +1072,239 @@ class GameApplication:
                 logger.error(f"Error in request_room_state: {e}")
                 await socket_gateway.emit_async("error", {"error": str(e)}, to=sid)
 
-        @socket_gateway.sio.on("list_rooms")
-        async def on_list_rooms(sid, data):
-            logger.info(f"List rooms request from {sid}")
+        @socket_gateway.sio.on("create_room")
+        async def on_create_room(sid, data=None):
+            """MC creates a room. The server owns the id and the config."""
+            payload = data if isinstance(data, dict) else {}
             try:
                 if not session_registry.is_mc(sid):
                     await socket_gateway.emit_async(
-                        "error",
-                        {"error": "Only the MC can list rooms"},
+                        "create_room_response",
+                        {
+                            "success": False,
+                            "error": "Only an authenticated MC can create rooms",
+                        },
                         to=sid,
                     )
                     return
 
-                # An MC only ever sees the rooms it owns.
-                rooms = await self.room_controller.list_rooms_for_mc(
-                    session_registry.mc_username(sid)
+                config = payload.get("config")
+                if not isinstance(config, dict):
+                    config = {
+                        key: payload[key]
+                        for key in (
+                            "session_mode",
+                            "max_player_links",
+                            "lock_on_round_start",
+                            "allow_multi_link",
+                        )
+                        if key in payload
+                    }
+
+                username = session_registry.mc_username(sid)
+                result = await self.room_controller.create_room(
+                    config=config,
+                    owner_mc=username,
+                    mc_name=payload.get("mc_name") or "MC",
+                )
+                if result.get("success"):
+                    room_id = result["room"]["room_id"]
+                    await socket_gateway.enter_room(sid, f"room_{room_id}")
+                    result["room_state"] = await self._build_room_state(room_id)
+                await socket_gateway.emit_async(
+                    "create_room_response", result, to=sid
+                )
+            except Exception as e:
+                logger.error(f"Error in create_room: {e}", exc_info=True)
+                await socket_gateway.emit_async(
+                    "create_room_response",
+                    {"success": False, "error": str(e)},
+                    to=sid,
+                )
+
+        @socket_gateway.sio.on("update_room")
+        async def on_update_room(sid, data=None):
+            """MC updates the live session policy of a room it owns."""
+            payload = data if isinstance(data, dict) else {}
+            try:
+                room_id = str(payload.get("room_id") or "").strip().upper()
+                if not room_id:
+                    await socket_gateway.emit_async(
+                        "update_room_response",
+                        {"success": False, "error": "room_id is required"},
+                        to=sid,
+                    )
+                    return
+                if not await self._require_room_owner(sid, room_id):
+                    await socket_gateway.emit_async(
+                        "update_room_response",
+                        {
+                            "success": False,
+                            "error": "Only the MC that owns this room can update it",
+                        },
+                        to=sid,
+                    )
+                    return
+
+                config = payload.get("config")
+                if not isinstance(config, dict):
+                    config = {
+                        key: payload[key]
+                        for key in (
+                            "session_mode",
+                            "max_player_links",
+                            "lock_on_round_start",
+                            "allow_multi_link",
+                        )
+                        if key in payload
+                    }
+
+                result = await self.room_controller.update_room(
+                    room_id, config, session_registry.mc_username(sid)
                 )
                 await socket_gateway.emit_async(
-                    "rooms_list",
-                    {"success": True, "rooms": rooms},
+                    "update_room_response", result, to=sid
+                )
+                if result.get("success"):
+                    await socket_gateway.emit_async(
+                        "room_config_updated",
+                        {
+                            "room_id": room_id,
+                            "config": result.get("config"),
+                        },
+                        to=f"room_{room_id}",
+                    )
+                    demoted = await self._enforce_round_link_limit(room_id)
+                    if demoted:
+                        logger.info(
+                            f"Room {room_id}: {len(demoted)} extra link(s) "
+                            f"demoted after a live config change"
+                        )
+                    await self._broadcast_room_state(room_id)
+            except Exception as e:
+                logger.error(f"Error in update_room: {e}", exc_info=True)
+                await socket_gateway.emit_async(
+                    "update_room_response",
+                    {"success": False, "error": str(e)},
+                    to=sid,
+                )
+
+        @socket_gateway.sio.on("delete_room")
+        async def on_delete_room(sid, data=None):
+            """MC deletes a room and every cached record that belongs to it."""
+            payload = data if isinstance(data, dict) else {}
+            try:
+                room_id = str(payload.get("room_id") or "").strip().upper()
+                if not room_id:
+                    await socket_gateway.emit_async(
+                        "delete_room_response",
+                        {"success": False, "error": "room_id is required"},
+                        to=sid,
+                    )
+                    return
+                if not await self._require_room_owner(sid, room_id):
+                    await socket_gateway.emit_async(
+                        "delete_room_response",
+                        {
+                            "success": False,
+                            "error": "Only the MC that owns this room can delete it",
+                        },
+                        to=sid,
+                    )
+                    return
+
+                result = await self.room_controller.delete_room(
+                    room_id, session_registry.mc_username(sid)
+                )
+                await socket_gateway.emit_async(
+                    "delete_room_response", result, to=sid
+                )
+                if result.get("success"):
+                    try:
+                        await socket_gateway.emit_async(
+                            "room_closed",
+                            {
+                                "room_id": room_id,
+                                "message": "Phòng đã bị MC đóng.",
+                            },
+                            to=f"room_{room_id}",
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"Could not announce room {room_id} closure: {e}"
+                        )
+            except Exception as e:
+                logger.error(f"Error in delete_room: {e}", exc_info=True)
+                await socket_gateway.emit_async(
+                    "delete_room_response",
+                    {"success": False, "error": str(e)},
+                    to=sid,
+                )
+
+        @socket_gateway.sio.on("get_room")
+        async def on_get_room(sid, data=None):
+            """Public room lookup by id (used by the rejoin screen)."""
+            payload = data if isinstance(data, dict) else {}
+            try:
+                room_id = str(payload.get("room_id") or "").strip().upper()
+                info = await self.room_controller.get_room(room_id) if room_id else None
+                if not info:
+                    await socket_gateway.emit_async(
+                        "room_info_response",
+                        {
+                            "success": False,
+                            "error": "Không tìm thấy phòng này",
+                            "room_id": room_id,
+                        },
+                        to=sid,
+                    )
+                    return
+                room = await self.room_controller.public_room_view(
+                    info, current_round=await self.room_controller.get_current_round(room_id)
+                )
+                await socket_gateway.emit_async(
+                    "room_info_response",
+                    {"success": True, "room": room},
                     to=sid,
                 )
             except Exception as e:
+                logger.error(f"Error in get_room: {e}")
+                await socket_gateway.emit_async(
+                    "room_info_response",
+                    {"success": False, "error": str(e)},
+                    to=sid,
+                )
+
+        @socket_gateway.sio.on("list_rooms")
+        async def on_list_rooms(sid, data=None):
+            """Public room directory; MCs additionally receive their own rooms."""
+            logger.info(f"List rooms request from {sid}")
+            try:
+                rooms = await self.room_controller.list_public_rooms()
+                payload = {"success": True, "rooms": rooms}
+
+                if session_registry.is_mc(sid):
+                    mine = await self.room_controller.list_rooms_for_mc(
+                        session_registry.mc_username(sid)
+                    )
+                    payload["mine"] = [
+                        await self.room_controller.public_room_view(
+                            room,
+                            current_round=await self.room_controller.get_current_round(
+                                room.get("room_id")
+                            ),
+                        )
+                        for room in mine
+                    ]
+
+                await socket_gateway.emit_async("rooms_list", payload, to=sid)
+            except Exception as e:
                 logger.error(f"Error in list_rooms: {e}")
-                await socket_gateway.emit_async("error", {"error": str(e)}, to=sid)
+                await socket_gateway.emit_async(
+                    "rooms_list",
+                    {"success": False, "error": str(e), "rooms": []},
+                    to=sid,
+                )
 
     async def shutdown(self) -> None:
         """Shutdown handler"""

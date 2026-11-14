@@ -31,6 +31,10 @@ class Settings:
         self.JWT_SECRET = os.getenv("JWT_SECRET", "")
         self.JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
         self.JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", 720))
+        # Players get a separate, shorter lived identity token (2 hours).
+        self.PLAYER_JWT_EXPIRE_MINUTES = int(
+            os.getenv("PLAYER_JWT_EXPIRE_MINUTES", 120)
+        )
         self.MC_USERNAME = os.getenv("MC_USERNAME", "")
         self.MC_PASSWORD_HASH = os.getenv("MC_PASSWORD_HASH", "")
 

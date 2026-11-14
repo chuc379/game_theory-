@@ -229,6 +229,66 @@
 }
 ```
 
+## Room Lifecycle, Session Policy & Player Identity
+
+### `create_room` (MC only)
+- **Direction**: Client → Server
+- **Payload**:
+```json
+{
+  "config": {
+    "session_mode": "multi_link",
+    "max_player_links": 6,
+    "lock_on_round_start": true
+  }
+}
+```
+- **Response** (`create_room_response`): `{ success, room: { room_id, config, ... }, room_state }`
+- The **server generates** the `room_id`; clients must not send one.
+- `session_mode`: `multi_link` (testing) or `single_link` (one player link per device).
+- `max_player_links`: 1–20, only used by `multi_link`.
+- `lock_on_round_start`: when true, `start_round` demotes extra links from the
+  same device to spectators and removes their test players from the match.
+
+### `update_room` / `delete_room` (MC owner only)
+- `update_room` `{ room_id, config }` → `update_room_response`, broadcasts
+  `room_config_updated` and `room_state`.
+- `delete_room` `{ room_id }` → `delete_room_response`, broadcasts `room_closed`.
+- Both reject a different MC with `success: false`.
+
+### `list_rooms` (public)
+- **Direction**: Client → Server
+- **Response** (`rooms_list`): `{ success, rooms: [...] }`
+- Anonymous players and MCs both receive the public directory. An authenticated
+  MC additionally receives `mine` (rooms it owns).
+
+### Player identity (JWT)
+- Players send `device_id` in the Socket.IO handshake and `player_token` in
+  `join_room`.
+- A valid token maps the rejoin to the same `player_id`; no duplicate player is
+  created. Tokens expire after `PLAYER_JWT_EXPIRE_MINUTES` (default **120**).
+- `join_room_response` returns `player_token`, `player_token_expires_in`,
+  `rejoined`, `reauth` and `config`.
+
+### `player_executed` (broadcast)
+- Sent after `round_result_ready` when at least one player reached 0 lives.
+- **Payload**:
+```json
+{
+  "room_id": "ABC123",
+  "round_id": 4,
+  "players": [{ "player_id": "usr_1", "player_name": "A" }],
+  "names": ["A"],
+  "message": "☠️ Đã xử tử: A"
+}
+```
+- Only the executed player becomes a spectator; the gateway and the room keep
+  running and the next round can start.
+
+### `session_demoted` (per socket)
+- Sent to extra test links when a round starts and the room locks to one link
+  per device. The client switches to spectator mode.
+
 ## Redis Data Structure (Backend Reference)
 
 ### Keys Pattern

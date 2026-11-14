@@ -11,8 +11,15 @@ REDIS_ROOM_HISTORY = "room:{room_id}:history"
 REDIS_ROOM_CURRENT_ROUND = "room:{room_id}:current_round"
 REDIS_ROOM_ROUND_STATUS = "room:{room_id}:round_status"
 REDIS_ROOM_SCORES = "room:{room_id}:scores"
+# Set of every room that currently exists, so listing does not depend on KEYS.
+REDIS_ROOMS_INDEX = "rooms:index"
 
 ROUND_DURATION_SECONDS = 30
+
+# Server generated room codes. Ambiguous characters (0/O, 1/I) are skipped so a
+# code can be read out loud and typed by hand.
+ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+ROOM_CODE_LENGTH = 6
 
 # Survival mode
 # Every player starts with this many lives. A wrong guess costs one life and a

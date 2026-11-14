@@ -81,7 +81,11 @@ class RoomScoreboard:
         """Get sorted ranking: alive players first, then by remaining lives"""
         sorted_players = sorted(
             self.players,
-            key=lambda p: (p.eliminated, -p.total_points, p.player_name.lower()),
+            key=lambda p: (
+                p.eliminated,
+                -p.total_points,
+                (p.player_name or "").lower(),
+            ),
         )
         return [
             {

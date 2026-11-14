@@ -115,6 +115,24 @@ class RedisClient:
         """Delete key"""
         return await self.client.delete(key)
 
+    async def delete_many(self, *keys: str) -> int:
+        """Delete several keys in one round trip"""
+        if not keys:
+            return 0
+        return await self.client.delete(*keys)
+
+    async def sadd(self, key: str, *values: str) -> int:
+        """Add members to a set"""
+        return await self.client.sadd(key, *values)
+
+    async def srem(self, key: str, *values: str) -> int:
+        """Remove members from a set"""
+        return await self.client.srem(key, *values)
+
+    async def smembers(self, key: str) -> List[str]:
+        """Return every member of a set"""
+        return list(await self.client.smembers(key))
+
     async def lpush(self, key: str, *values: Any) -> int:
         """Push to list"""
         str_values = [json.dumps(v) if isinstance(v, (dict, list)) else str(v) for v in values]
