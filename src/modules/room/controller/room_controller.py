@@ -3,6 +3,7 @@ Room controller - API schema & handlers for room operations
 """
 import logging
 import secrets
+import time
 from datetime import datetime
 from typing import Dict, Any, Optional
 
@@ -31,8 +32,19 @@ def validate_create_room(data: Dict[str, Any]) -> tuple[bool, str]:
 class RoomController:
     """Room controller - Handles room operations"""
 
+    # The public directory is read on every page mount; a very short in-memory
+    # cache avoids hammering Redis (one GET per room) for identical requests.
+    PUBLIC_ROOMS_CACHE_TTL_SECONDS = 3.0
+
     def __init__(self, room_repository):
         self.room_repo = room_repository
+        self._public_cache = None
+        self._public_cache_at = 0.0
+
+    def invalidate_public_cache(self) -> None:
+        """Drop the cached directory after any room mutation."""
+        self._public_cache = None
+        self._public_cache_at = 0.0
 
     # ------------------------------------------------------------------ read
 
@@ -52,8 +64,17 @@ class RoomController:
             logger.error(f"Error reading room {room_id}: {e}")
             return None
 
-    async def list_public_rooms(self) -> list:
+    async def list_public_rooms(self, use_cache: bool = True) -> list:
         """Rooms anyone (including anonymous players) may browse and rejoin."""
+        now = time.monotonic()
+        if (
+            use_cache
+            and self._public_cache is not None
+            and now - self._public_cache_at
+            < self.PUBLIC_ROOMS_CACHE_TTL_SECONDS
+        ):
+            return self._public_cache
+
         rooms = await self.list_rooms()
         public = []
         for info in rooms:
@@ -68,6 +89,9 @@ class RoomController:
                 )
             )
         public.sort(key=lambda room: room.get("created_at") or "", reverse=True)
+
+        self._public_cache = public
+        self._public_cache_at = time.monotonic()
         return public
 
     async def public_room_view(
@@ -146,6 +170,7 @@ class RoomController:
                 "config": normalized,
             }
             await self.room_repo.save_info(room_id, room_info)
+            self.invalidate_public_cache()
             logger.info(
                 f"Room {room_id} created by MC '{owner_mc}' with config {normalized}"
             )
@@ -177,6 +202,7 @@ class RoomController:
             info["config"] = normalized
             info["room_id"] = room_id
             await self.room_repo.save_info(room_id, info)
+            self.invalidate_public_cache()
             logger.info(f"Room {room_id} config updated to {normalized}")
             return {
                 "success": True,
@@ -203,6 +229,7 @@ class RoomController:
             deleted = await self.room_repo.delete_room(room_id)
             if not deleted:
                 return {"success": False, "error": "Could not delete room"}
+            self.invalidate_public_cache()
             return {"success": True, "room_id": room_id}
         except Exception as e:
             logger.error(f"Error deleting room {room_id}: {e}")
@@ -239,6 +266,7 @@ class RoomController:
             existing.setdefault("status", "ACTIVE")
             existing["config"] = normalize_room_config(existing.get("config"))
             await self.room_repo.save_info(room_id, existing)
+            self.invalidate_public_cache()
             logger.info(f"Room {room_id} owned by MC '{mc_username}'")
             return {"success": True, "room": existing}
         except Exception as e:

@@ -250,6 +250,7 @@ class GameApplication:
             info["room_id"] = room_id
             info["player_count"] = len(players)
             await self.room_controller.room_repo.save_info(room_id, info)
+            self.room_controller.invalidate_public_cache()
         except Exception as e:
             logger.warning(f"Failed to refresh player count for room {room_id}: {e}")
 
